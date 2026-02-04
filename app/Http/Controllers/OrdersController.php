@@ -1,0 +1,150 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\KinaraCharge;
+use App\Services\PlentySystemService;
+use Carbon\Carbon;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Request;
+use Inertia\Inertia;
+use Inertia\Response;
+
+class OrdersController extends Controller
+{
+    private const int TABLET_VARIATION_ID = 1139;
+
+    public function __construct(private readonly PlentySystemService $plentySystem) {}
+
+    /**
+     * @throws ConnectionException
+     */
+    public function index(Request $request): Response
+    {
+        $year = (int) $request->input('year', now()->year);
+        $month = (int) $request->input('month', now()->month);
+
+        $startDate = Carbon::create($year, $month, 1)->startOfMonth();
+        $endDate = $startDate->copy()->endOfMonth();
+
+        $allOrders = $this->plentySystem->getOrdersForDateRange($startDate, $endDate);
+
+        $groupedByCountry = [];
+
+        foreach ($allOrders as $order) {
+            $countries = $this->plentySystem->extractOrderCountries($order);
+            $countryName = $countries['delivery_country_name'] ?? 'Unknown';
+            $countryId = $countries['delivery_country_id'];
+
+            if (! isset($groupedByCountry[$countryName])) {
+                $groupedByCountry[$countryName] = [
+                    'country_name' => $countryName,
+                    'country_id' => $countryId,
+                    'orders' => [],
+                    'order_count' => 0,
+                    'total_gross' => 0,
+                    'total_skus' => 0,
+                    'total_charges' => 0,
+                    'currency' => 'EUR',
+                ];
+            }
+
+            $skuCount = $this->countOrderSkus($order);
+            $hasTablet = $this->orderHasTablet($order);
+            $charges = KinaraCharge::calculateOrderTotal($hasTablet);
+
+            $orderWithExtras = array_merge($order, [
+                'countries' => $countries,
+                'sku_count' => $skuCount,
+                'has_tablet' => $hasTablet,
+                'charges' => $charges,
+            ]);
+
+            $groupedByCountry[$countryName]['orders'][] = $orderWithExtras;
+            $groupedByCountry[$countryName]['order_count']++;
+            $groupedByCountry[$countryName]['total_skus'] += $skuCount;
+            $groupedByCountry[$countryName]['total_charges'] += $charges;
+
+            $grossTotal = $order['amounts'][0]['grossTotal'] ?? 0;
+            $groupedByCountry[$countryName]['total_gross'] += $grossTotal;
+
+            if (isset($order['amounts'][0]['currency'])) {
+                $groupedByCountry[$countryName]['currency'] = $order['amounts'][0]['currency'];
+            }
+        }
+
+        uasort($groupedByCountry, fn ($a, $b) => $b['order_count'] <=> $a['order_count']);
+
+        $availableMonths = $this->getAvailableMonths();
+
+        return Inertia::render('Orders/Index', [
+            'groupedOrders' => array_values($groupedByCountry),
+            'totalOrders' => count($allOrders),
+            'filters' => [
+                'year' => $year,
+                'month' => $month,
+            ],
+            'availableMonths' => $availableMonths,
+            'perOrderCharges' => KinaraCharge::getPerOrderCharges(),
+            'monthlyCharges' => KinaraCharge::getMonthlyCharges(),
+            'monthlyTotal' => KinaraCharge::calculateMonthlyTotal(),
+        ]);
+    }
+
+    /**
+     * @return array<int, array{value: string, label: string}>
+     */
+    private function getAvailableMonths(): array
+    {
+        $months = [];
+        $current = now()->startOfMonth();
+
+        for ($i = 0; $i < 12; $i++) {
+            $date = $current->copy()->subMonths($i);
+            $months[] = [
+                'value' => $date->format('Y-m'),
+                'label' => $date->format('F Y'),
+            ];
+        }
+
+        return $months;
+    }
+
+    /**
+     * Count unique SKUs in an order (excluding shipping and other non-product items).
+     *
+     * @param  array<string, mixed>  $order
+     */
+    private function countOrderSkus(array $order): int
+    {
+        $orderItems = $order['orderItems'] ?? [];
+        $skuCount = 0;
+
+        foreach ($orderItems as $item) {
+            // typeId 1 = product item, skip shipping (6), discounts, etc.
+            if (($item['typeId'] ?? 0) === 1 && ($item['itemVariationId'] ?? 0) > 0) {
+                $skuCount++;
+            }
+        }
+
+        return $skuCount;
+    }
+
+    /**
+     * Check if an order contains a tablet (by variation ID).
+     *
+     * @param  array<string, mixed>  $order
+     */
+    private function orderHasTablet(array $order): bool
+    {
+        $orderItems = $order['orderItems'] ?? [];
+
+        foreach ($orderItems as $item) {
+            if (($item['itemVariationId'] ?? 0) === self::TABLET_VARIATION_ID) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}

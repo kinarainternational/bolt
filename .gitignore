@@ -26,15 +26,11 @@ yarn-error.log
 /.nova
 /.vscode
 /.zed
-
-# AI Assistant configs
 /.claude
 /.junie
 /.mcp.json
 CLAUDE.md
 boost.json
-
-# Business documents (local only)
 BUSINESS_QUESTIONS.md
 EXPORT_QUESTIONS.md
 reference-sheet.xlsx

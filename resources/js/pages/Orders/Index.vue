@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { Head, Link, router } from '@inertiajs/vue3';
-import { ref, computed } from 'vue';
-import AppLayout from '@/layouts/AppLayout.vue';
-import { type BreadcrumbItem } from '@/types';
+import { Head, Link, router, usePage } from '@inertiajs/vue3';
+import { ref, computed, watch } from 'vue';
+import ExportModal from '@/components/ExportModal.vue';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
     Card,
     CardContent,
@@ -11,6 +12,11 @@ import {
     CardTitle,
 } from '@/components/ui/card';
 import {
+    Collapsible,
+    CollapsibleContent,
+    CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import {
     Table,
     TableBody,
     TableCell,
@@ -18,14 +24,8 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import {
-    Collapsible,
-    CollapsibleContent,
-    CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import ExportModal from '@/components/ExportModal.vue';
+import AppLayout from '@/layouts/AppLayout.vue';
+import { type BreadcrumbItem } from '@/types';
 
 interface OrderCountries {
     billing_country_id: number | null;
@@ -84,6 +84,12 @@ interface KinaraCharge {
     is_active: boolean;
 }
 
+interface ApiError {
+    message: string;
+    type: string;
+    retryable: boolean;
+}
+
 const props = defineProps<{
     groupedOrders: GroupedOrders[];
     totalOrders: number;
@@ -92,6 +98,7 @@ const props = defineProps<{
     perOrderCharges: KinaraCharge[];
     monthlyCharges: KinaraCharge[];
     monthlyTotal: number;
+    error: ApiError | null;
 }>();
 
 const selectedMonth = ref(
@@ -191,6 +198,33 @@ const grandTotal = computed(() => {
 });
 
 const showExportModal = ref(false);
+const isRetrying = ref(false);
+const flashError = ref<string | null>(null);
+
+const page = usePage();
+
+watch(
+    () => page.props.flash,
+    (flash: any) => {
+        if (flash?.error) {
+            flashError.value = flash.error;
+            setTimeout(() => {
+                flashError.value = null;
+            }, 10000);
+        }
+    },
+    { immediate: true },
+);
+
+const retryFetch = () => {
+    isRetrying.value = true;
+    router.reload({
+        preserveState: false,
+        onFinish: () => {
+            isRetrying.value = false;
+        },
+    });
+};
 </script>
 
 <template>
@@ -226,14 +260,109 @@ const showExportModal = ref(false);
                             </option>
                         </select>
                     </div>
-                    <Button @click="showExportModal = true">
+                    <Button
+                        v-if="!error && totalOrders > 0"
+                        @click="showExportModal = true"
+                    >
                         Export Reference Sheet
                     </Button>
                 </div>
             </div>
 
+            <!-- Flash Error Alert (from export failures, etc.) -->
+            <Card
+                v-if="flashError"
+                class="border-destructive bg-destructive/10"
+            >
+                <CardContent class="flex items-center justify-between py-4">
+                    <div class="flex items-center gap-3">
+                        <svg
+                            class="h-5 w-5 text-destructive"
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                        >
+                            <circle cx="12" cy="12" r="10" />
+                            <line x1="12" y1="8" x2="12" y2="12" />
+                            <line x1="12" y1="16" x2="12.01" y2="16" />
+                        </svg>
+                        <p class="font-medium text-destructive">
+                            {{ flashError }}
+                        </p>
+                    </div>
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        @click="flashError = null"
+                    >
+                        Dismiss
+                    </Button>
+                </CardContent>
+            </Card>
+
+            <!-- API Error Alert -->
+            <Card
+                v-if="error"
+                class="border-destructive bg-destructive/10"
+            >
+                <CardContent class="flex items-center justify-between py-4">
+                    <div class="flex items-center gap-3">
+                        <svg
+                            class="h-5 w-5 text-destructive"
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                        >
+                            <circle cx="12" cy="12" r="10" />
+                            <line x1="12" y1="8" x2="12" y2="12" />
+                            <line x1="12" y1="16" x2="12.01" y2="16" />
+                        </svg>
+                        <div>
+                            <p class="font-medium text-destructive">
+                                {{ error.message }}
+                            </p>
+                            <p
+                                v-if="error.retryable"
+                                class="text-sm text-muted-foreground"
+                            >
+                                This may be a temporary issue. Please try again.
+                            </p>
+                        </div>
+                    </div>
+                    <Button
+                        v-if="error.retryable"
+                        variant="outline"
+                        :disabled="isRetrying"
+                        @click="retryFetch"
+                    >
+                        <svg
+                            v-if="isRetrying"
+                            class="mr-2 h-4 w-4 animate-spin"
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                        >
+                            <path
+                                d="M21 12a9 9 0 1 1-6.219-8.56"
+                            />
+                        </svg>
+                        {{ isRetrying ? 'Retrying...' : 'Retry' }}
+                    </Button>
+                </CardContent>
+            </Card>
+
             <!-- Summary Cards -->
-            <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <div v-if="!error" class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 <Card>
                     <CardHeader class="pb-2">
                         <CardDescription>Total Orders</CardDescription>
@@ -269,7 +398,7 @@ const showExportModal = ref(false);
             </div>
 
             <!-- Charges Reference -->
-            <div class="grid gap-4 md:grid-cols-2">
+            <div v-if="!error" class="grid gap-4 md:grid-cols-2">
                 <!-- Per-Order Charges -->
                 <Card>
                     <CardHeader class="pb-2">
@@ -345,7 +474,7 @@ const showExportModal = ref(false);
             </div>
 
             <!-- Grouped Orders by Country -->
-            <div class="space-y-4">
+            <div v-if="!error" class="space-y-4">
                 <Card
                     v-for="group in groupedOrders"
                     :key="group.country_name"

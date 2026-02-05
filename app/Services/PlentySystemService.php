@@ -2,11 +2,13 @@
 
 namespace App\Services;
 
-use Exception;
+use App\Exceptions\PlentySystemException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class PlentySystemService
 {
@@ -17,6 +19,10 @@ class PlentySystemService
     private string $password;
 
     private int $timeout;
+
+    private int $maxRetries = 3;
+
+    private int $retryDelayMs = 1000;
 
     public function __construct()
     {
@@ -29,30 +35,41 @@ class PlentySystemService
     /**
      * Get the access token, caching it for 23 hours (token valid for 24 hours).
      *
-     *
-     * @throws Exception
+     * @throws PlentySystemException
      */
     public function getAccessToken(): string
     {
         return Cache::remember('plentysystem_access_token', 82800, function () {
-            $response = Http::timeout($this->timeout)
-                ->post("{$this->baseUrl}/rest/login", [
-                    'username' => $this->username,
-                    'password' => $this->password,
-                ]);
+            try {
+                $response = Http::timeout($this->timeout)
+                    ->post("{$this->baseUrl}/rest/login", [
+                        'username' => $this->username,
+                        'password' => $this->password,
+                    ]);
 
-            if (! $response->successful()) {
-                throw new Exception('Failed to authenticate with PlentySystem API: '.$response->body());
+                if ($response->status() === 401) {
+                    throw PlentySystemException::authentication(
+                        'Invalid credentials for PlentySystem API'
+                    );
+                }
+
+                if (! $response->successful()) {
+                    throw PlentySystemException::serverError(
+                        'Failed to authenticate: '.$response->body()
+                    );
+                }
+
+                return $response->json('accessToken');
+            } catch (ConnectionException $e) {
+                $this->handleConnectionException($e, 'authentication');
             }
-
-            return $response->json('accessToken');
         });
     }
 
     /**
      * Create an authenticated HTTP client.
      *
-     * @throws Exception
+     * @throws PlentySystemException
      */
     private function client(): PendingRequest
     {
@@ -62,13 +79,124 @@ class PlentySystemService
     }
 
     /**
+     * Execute a request with retry logic.
+     *
+     * @param  callable(): Response  $requestFn
+     *
+     * @throws PlentySystemException
+     */
+    private function executeWithRetry(callable $requestFn, string $operation): Response
+    {
+        $lastException = null;
+
+        for ($attempt = 1; $attempt <= $this->maxRetries; $attempt++) {
+            try {
+                $response = $requestFn();
+
+                if ($response->successful()) {
+                    return $response;
+                }
+
+                if ($response->status() === 401) {
+                    $this->clearTokenCache();
+                    throw PlentySystemException::authentication(
+                        "Authentication failed during {$operation}"
+                    );
+                }
+
+                if ($response->serverError()) {
+                    Log::warning("PlentySystem server error during {$operation}", [
+                        'attempt' => $attempt,
+                        'status' => $response->status(),
+                        'body' => $response->body(),
+                    ]);
+
+                    if ($attempt < $this->maxRetries) {
+                        $this->sleep($attempt);
+
+                        continue;
+                    }
+
+                    throw PlentySystemException::serverError(
+                        "Server error during {$operation}: ".$response->body()
+                    );
+                }
+
+                throw new PlentySystemException(
+                    "Request failed during {$operation}: ".$response->body(),
+                    PlentySystemException::TYPE_UNKNOWN,
+                    $response->status()
+                );
+
+            } catch (ConnectionException $e) {
+                $lastException = $e;
+
+                Log::warning("PlentySystem connection error during {$operation}", [
+                    'attempt' => $attempt,
+                    'message' => $e->getMessage(),
+                ]);
+
+                if ($attempt < $this->maxRetries) {
+                    $this->sleep($attempt);
+
+                    continue;
+                }
+
+                $this->handleConnectionException($e, $operation);
+            }
+        }
+
+        throw PlentySystemException::connection(
+            "Failed after {$this->maxRetries} attempts during {$operation}",
+            $lastException
+        );
+    }
+
+    /**
+     * Sleep with exponential backoff.
+     */
+    private function sleep(int $attempt): void
+    {
+        $delayMs = $this->retryDelayMs * (2 ** ($attempt - 1));
+        usleep($delayMs * 1000);
+    }
+
+    /**
+     * Handle connection exceptions and throw appropriate PlentySystemException.
+     *
+     * @throws PlentySystemException
+     */
+    private function handleConnectionException(ConnectionException $e, string $operation): never
+    {
+        $message = strtolower($e->getMessage());
+
+        if (str_contains($message, 'timed out') || str_contains($message, 'timeout')) {
+            throw PlentySystemException::timeout(
+                "Request timed out during {$operation}",
+                $e
+            );
+        }
+
+        if (str_contains($message, 'could not resolve') || str_contains($message, 'connection refused')) {
+            throw PlentySystemException::connection(
+                "Could not connect to PlentySystem during {$operation}",
+                $e
+            );
+        }
+
+        throw PlentySystemException::connection(
+            "Connection error during {$operation}: ".$e->getMessage(),
+            $e
+        );
+    }
+
+    /**
      * Get all orders with pagination support.
      *
      * @param  array<string, mixed>  $params
      * @return array<string, mixed>
      *
-     * @throws ConnectionException
-     * @throws Exception
+     * @throws PlentySystemException
      */
     public function getOrders(array $params = []): array
     {
@@ -76,12 +204,12 @@ class PlentySystemService
             'with' => ['addresses', 'addressRelations', 'orderItems'],
         ];
 
-        $response = $this->client()
-            ->get("{$this->baseUrl}/rest/orders", array_merge($defaultParams, $params));
+        $mergedParams = array_merge($defaultParams, $params);
 
-        if (! $response->successful()) {
-            throw new Exception('Failed to fetch orders: '.$response->body());
-        }
+        $response = $this->executeWithRetry(
+            fn () => $this->client()->get("{$this->baseUrl}/rest/orders", $mergedParams),
+            'fetching orders'
+        );
 
         return $response->json();
     }
@@ -92,8 +220,7 @@ class PlentySystemService
      * @param  array<int>  $orderTypes  Filter by order type IDs (1=Sales, 2=Delivery, 3=Returns, etc.)
      * @return array<int, array<string, mixed>>
      *
-     * @throws ConnectionException
-     * @throws Exception
+     * @throws PlentySystemException
      */
     public function getOrdersForDateRange(
         \DateTimeInterface $startDate,
@@ -117,12 +244,10 @@ class PlentySystemService
                 $params['orderTypes'] = implode(',', $orderTypes);
             }
 
-            $response = $this->client()
-                ->get("{$this->baseUrl}/rest/orders", $params);
-
-            if (! $response->successful()) {
-                throw new Exception('Failed to fetch orders: '.$response->body());
-            }
+            $response = $this->executeWithRetry(
+                fn () => $this->client()->get("{$this->baseUrl}/rest/orders", $params),
+                "fetching orders (page {$page})"
+            );
 
             $data = $response->json();
             $entries = $data['entries'] ?? [];
@@ -141,19 +266,16 @@ class PlentySystemService
      *
      * @return array<string, mixed>
      *
-     * @throws ConnectionException
-     * @throws Exception
+     * @throws PlentySystemException
      */
     public function getOrder(int $orderId): array
     {
-        $response = $this->client()
-            ->get("{$this->baseUrl}/rest/orders/{$orderId}", [
+        $response = $this->executeWithRetry(
+            fn () => $this->client()->get("{$this->baseUrl}/rest/orders/{$orderId}", [
                 'with' => ['addresses', 'addressRelations', 'orderItems'],
-            ]);
-
-        if (! $response->successful()) {
-            throw new Exception("Failed to fetch order {$orderId}: ".$response->body());
-        }
+            ]),
+            "fetching order {$orderId}"
+        );
 
         return $response->json();
     }
@@ -162,16 +284,16 @@ class PlentySystemService
      * Get all countries.
      *
      * @return array<int, array<string, mixed>>
+     *
+     * @throws PlentySystemException
      */
     public function getCountries(): array
     {
         return Cache::remember('plentysystem_countries', 86400, function () {
-            $response = $this->client()
-                ->get("{$this->baseUrl}/rest/orders/shipping/countries");
-
-            if (! $response->successful()) {
-                throw new Exception('Failed to fetch countries: '.$response->body());
-            }
+            $response = $this->executeWithRetry(
+                fn () => $this->client()->get("{$this->baseUrl}/rest/orders/shipping/countries"),
+                'fetching countries'
+            );
 
             return $response->json();
         });
@@ -182,12 +304,16 @@ class PlentySystemService
      */
     public function getCountryName(int $countryId): ?string
     {
-        $countries = $this->getCountries();
+        try {
+            $countries = $this->getCountries();
 
-        foreach ($countries as $country) {
-            if (($country['id'] ?? null) === $countryId) {
-                return $country['name'] ?? null;
+            foreach ($countries as $country) {
+                if (($country['id'] ?? null) === $countryId) {
+                    return $country['name'] ?? null;
+                }
             }
+        } catch (PlentySystemException) {
+            Log::warning("Failed to get country name for ID {$countryId}");
         }
 
         return null;
@@ -259,8 +385,7 @@ class PlentySystemService
      *
      * @return array<int, array<string, mixed>>
      *
-     * @throws ConnectionException
-     * @throws Exception
+     * @throws PlentySystemException
      */
     public function getVariations(): array
     {
@@ -269,15 +394,13 @@ class PlentySystemService
         $itemsPerPage = 250;
 
         do {
-            $response = $this->client()
-                ->get("{$this->baseUrl}/rest/items/variations", [
+            $response = $this->executeWithRetry(
+                fn () => $this->client()->get("{$this->baseUrl}/rest/items/variations", [
                     'page' => $page,
                     'itemsPerPage' => $itemsPerPage,
-                ]);
-
-            if (! $response->successful()) {
-                throw new Exception('Failed to fetch variations: '.$response->body());
-            }
+                ]),
+                "fetching variations (page {$page})"
+            );
 
             $data = $response->json();
             $entries = $data['entries'] ?? [];

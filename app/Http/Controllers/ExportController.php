@@ -2,10 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\PlentySystemException;
 use App\Models\KinaraCharge;
 use App\Services\PlentySystemService;
 use Carbon\Carbon;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
@@ -36,7 +39,7 @@ class ExportController extends Controller
 
     public function __construct(private readonly PlentySystemService $plentySystem) {}
 
-    public function export(Request $request): StreamedResponse
+    public function export(Request $request): StreamedResponse|RedirectResponse
     {
         $validated = $request->validate([
             'year' => 'required|integer',
@@ -54,11 +57,24 @@ class ExportController extends Controller
         $startDate = Carbon::create($year, $month, 1)->startOfMonth();
         $endDate = $startDate->copy()->endOfMonth();
 
-        $allOrders = $this->plentySystem->getOrdersForDateRange(
-            $startDate,
-            $endDate,
-            self::BILLABLE_ORDER_TYPES
-        );
+        try {
+            $allOrders = $this->plentySystem->getOrdersForDateRange(
+                $startDate,
+                $endDate,
+                self::BILLABLE_ORDER_TYPES
+            );
+        } catch (PlentySystemException $e) {
+            Log::error('Failed to fetch orders for export', [
+                'error_type' => $e->errorType,
+                'message' => $e->getMessage(),
+                'year' => $year,
+                'month' => $month,
+            ]);
+
+            return redirect()
+                ->back()
+                ->with('error', $e->getUserMessage());
+        }
 
         $groupedByCountry = $this->groupOrdersByCountry($allOrders);
 

@@ -2,11 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\PlentySystemException;
 use App\Models\KinaraCharge;
 use App\Services\PlentySystemService;
 use Carbon\Carbon;
-use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -45,9 +46,6 @@ class OrdersController extends Controller
 
     public function __construct(private readonly PlentySystemService $plentySystem) {}
 
-    /**
-     * @throws ConnectionException
-     */
     public function index(Request $request): Response
     {
         $year = (int) $request->input('year', now()->year);
@@ -56,12 +54,107 @@ class OrdersController extends Controller
         $startDate = Carbon::create($year, $month, 1)->startOfMonth();
         $endDate = $startDate->copy()->endOfMonth();
 
-        $allOrders = $this->plentySystem->getOrdersForDateRange(
-            $startDate,
-            $endDate,
-            self::BILLABLE_ORDER_TYPES
-        );
+        $availableMonths = $this->getAvailableMonths();
 
+        try {
+            $allOrders = $this->plentySystem->getOrdersForDateRange(
+                $startDate,
+                $endDate,
+                self::BILLABLE_ORDER_TYPES
+            );
+
+            $groupedByCountry = $this->processOrders($allOrders);
+
+            return Inertia::render('Orders/Index', [
+                'groupedOrders' => array_values($groupedByCountry),
+                'totalOrders' => count($allOrders),
+                'filters' => [
+                    'year' => $year,
+                    'month' => $month,
+                ],
+                'availableMonths' => $availableMonths,
+                'perOrderCharges' => KinaraCharge::getPerOrderCharges(),
+                'monthlyCharges' => KinaraCharge::getMonthlyCharges(),
+                'monthlyTotal' => KinaraCharge::calculateMonthlyTotal(),
+                'error' => null,
+            ]);
+        } catch (PlentySystemException $e) {
+            Log::error('Failed to fetch orders', [
+                'error_type' => $e->errorType,
+                'message' => $e->getMessage(),
+                'year' => $year,
+                'month' => $month,
+            ]);
+
+            return Inertia::render('Orders/Index', [
+                'groupedOrders' => [],
+                'totalOrders' => 0,
+                'filters' => [
+                    'year' => $year,
+                    'month' => $month,
+                ],
+                'availableMonths' => $availableMonths,
+                'perOrderCharges' => KinaraCharge::getPerOrderCharges(),
+                'monthlyCharges' => KinaraCharge::getMonthlyCharges(),
+                'monthlyTotal' => KinaraCharge::calculateMonthlyTotal(),
+                'error' => [
+                    'message' => $e->getUserMessage(),
+                    'type' => $e->errorType,
+                    'retryable' => $e->isRetryable(),
+                ],
+            ]);
+        }
+    }
+
+    public function show(int $orderId): Response
+    {
+        try {
+            $order = $this->plentySystem->getOrder($orderId);
+
+            $countries = $this->plentySystem->extractOrderCountries($order);
+            $skuCount = $this->countOrderSkus($order);
+            $hasTablet = $this->orderHasTablet($order);
+            $charges = KinaraCharge::calculateOrderTotal($hasTablet);
+
+            $orderWithExtras = array_merge($order, [
+                'countries' => $countries,
+                'sku_count' => $skuCount,
+                'has_tablet' => $hasTablet,
+                'charges' => $charges,
+            ]);
+
+            return Inertia::render('Orders/Show', [
+                'order' => $orderWithExtras,
+                'perOrderCharges' => KinaraCharge::getPerOrderCharges(),
+                'error' => null,
+            ]);
+        } catch (PlentySystemException $e) {
+            Log::error('Failed to fetch order', [
+                'error_type' => $e->errorType,
+                'message' => $e->getMessage(),
+                'order_id' => $orderId,
+            ]);
+
+            return Inertia::render('Orders/Show', [
+                'order' => null,
+                'perOrderCharges' => KinaraCharge::getPerOrderCharges(),
+                'error' => [
+                    'message' => $e->getUserMessage(),
+                    'type' => $e->errorType,
+                    'retryable' => $e->isRetryable(),
+                ],
+            ]);
+        }
+    }
+
+    /**
+     * Process orders and group them by country.
+     *
+     * @param  array<int, array<string, mixed>>  $allOrders
+     * @return array<string, array<string, mixed>>
+     */
+    private function processOrders(array $allOrders): array
+    {
         $groupedByCountry = [];
 
         foreach ($allOrders as $order) {
@@ -108,45 +201,7 @@ class OrdersController extends Controller
 
         uasort($groupedByCountry, fn ($a, $b) => $b['order_count'] <=> $a['order_count']);
 
-        $availableMonths = $this->getAvailableMonths();
-
-        return Inertia::render('Orders/Index', [
-            'groupedOrders' => array_values($groupedByCountry),
-            'totalOrders' => count($allOrders),
-            'filters' => [
-                'year' => $year,
-                'month' => $month,
-            ],
-            'availableMonths' => $availableMonths,
-            'perOrderCharges' => KinaraCharge::getPerOrderCharges(),
-            'monthlyCharges' => KinaraCharge::getMonthlyCharges(),
-            'monthlyTotal' => KinaraCharge::calculateMonthlyTotal(),
-        ]);
-    }
-
-    /**
-     * @throws ConnectionException
-     */
-    public function show(int $orderId): Response
-    {
-        $order = $this->plentySystem->getOrder($orderId);
-
-        $countries = $this->plentySystem->extractOrderCountries($order);
-        $skuCount = $this->countOrderSkus($order);
-        $hasTablet = $this->orderHasTablet($order);
-        $charges = KinaraCharge::calculateOrderTotal($hasTablet);
-
-        $orderWithExtras = array_merge($order, [
-            'countries' => $countries,
-            'sku_count' => $skuCount,
-            'has_tablet' => $hasTablet,
-            'charges' => $charges,
-        ]);
-
-        return Inertia::render('Orders/Show', [
-            'order' => $orderWithExtras,
-            'perOrderCharges' => KinaraCharge::getPerOrderCharges(),
-        ]);
+        return $groupedByCountry;
     }
 
     /**

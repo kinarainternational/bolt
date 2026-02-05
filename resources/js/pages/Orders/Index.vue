@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Head, router } from '@inertiajs/vue3';
+import { Head, Link, router } from '@inertiajs/vue3';
 import { ref, computed } from 'vue';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { type BreadcrumbItem } from '@/types';
@@ -19,11 +19,13 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
     Collapsible,
     CollapsibleContent,
     CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import ExportModal from '@/components/ExportModal.vue';
 
 interface OrderCountries {
     billing_country_id: number | null;
@@ -187,6 +189,8 @@ const totalOrderCharges = computed(() => {
 const grandTotal = computed(() => {
     return totalOrderCharges.value + props.monthlyTotal;
 });
+
+const showExportModal = ref(false);
 </script>
 
 <template>
@@ -202,24 +206,29 @@ const grandTotal = computed(() => {
                         {{ totalOrders }} orders in {{ currentMonthLabel }}
                     </p>
                 </div>
-                <div class="flex items-center gap-2">
-                    <label for="month-filter" class="text-sm font-medium">
-                        Month:
-                    </label>
-                    <select
-                        id="month-filter"
-                        v-model="selectedMonth"
-                        class="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                        @change="onMonthChange"
-                    >
-                        <option
-                            v-for="month in availableMonths"
-                            :key="month.value"
-                            :value="month.value"
+                <div class="flex items-center gap-4">
+                    <div class="flex items-center gap-2">
+                        <label for="month-filter" class="text-sm font-medium">
+                            Month:
+                        </label>
+                        <select
+                            id="month-filter"
+                            v-model="selectedMonth"
+                            class="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                            @change="onMonthChange"
                         >
-                            {{ month.label }}
-                        </option>
-                    </select>
+                            <option
+                                v-for="month in availableMonths"
+                                :key="month.value"
+                                :value="month.value"
+                            >
+                                {{ month.label }}
+                            </option>
+                        </select>
+                    </div>
+                    <Button @click="showExportModal = true">
+                        Export Reference Sheet
+                    </Button>
                 </div>
             </div>
 
@@ -421,7 +430,12 @@ const grandTotal = computed(() => {
                                             :key="order.id"
                                         >
                                             <TableCell class="font-medium">
-                                                {{ order.id }}
+                                                <Link
+                                                    :href="`/orders/${order.id}`"
+                                                    class="text-primary hover:underline"
+                                                >
+                                                    {{ order.id }}
+                                                </Link>
                                             </TableCell>
                                             <TableCell>
                                                 <Badge variant="outline">
@@ -480,5 +494,12 @@ const grandTotal = computed(() => {
                 </Card>
             </div>
         </div>
+
+        <ExportModal
+            v-model:open="showExportModal"
+            :year="filters.year"
+            :month="filters.month"
+            :month-label="currentMonthLabel"
+        />
     </AppLayout>
 </template>

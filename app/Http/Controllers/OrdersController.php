@@ -12,7 +12,36 @@ use Inertia\Response;
 
 class OrdersController extends Controller
 {
-    private const int TABLET_VARIATION_ID = 1139;
+    /**
+     * Variation IDs that contain tablets (trigger tablet configuration charge).
+     *
+     * @var array<int>
+     */
+    private const array TABLET_VARIATION_IDS = [
+        1125, // KIBOTBLT - Bolt Tablet
+        1138, // BOLTABV2s - Tablet V2s
+        1139, // BOLTABV3 - Tablet V3
+        1130, // BOLTABV2+STI - Tablet V2 bundle
+        1131, // BOLTABV3+STI - Tablet V3 bundle
+        1132, // BOLTABV2+STI+TABTO
+        1133, // BOLTABV3+STI+TABTO
+        1134, // BOLTABV2+SIM
+        1135, // BOLTABV3+STI+SIM
+        1136, // BOLTABV2+STI+SIM+TABTO
+        1137, // BOLTABV3+STI+SIM+TABTO
+    ];
+
+    /**
+     * Order types to include in billing calculations.
+     * 1 = Sales Order, 2 = Delivery, 3 = Returns, etc.
+     *
+     * @see https://developers.plentymarkets.com/en-gb/developers/main/rest-api-guides/order-data.html
+     *
+     * @var array<int>
+     */
+    private const array BILLABLE_ORDER_TYPES = [
+        1, // Sales Order
+    ];
 
     public function __construct(private readonly PlentySystemService $plentySystem) {}
 
@@ -27,7 +56,11 @@ class OrdersController extends Controller
         $startDate = Carbon::create($year, $month, 1)->startOfMonth();
         $endDate = $startDate->copy()->endOfMonth();
 
-        $allOrders = $this->plentySystem->getOrdersForDateRange($startDate, $endDate);
+        $allOrders = $this->plentySystem->getOrdersForDateRange(
+            $startDate,
+            $endDate,
+            self::BILLABLE_ORDER_TYPES
+        );
 
         $groupedByCountry = [];
 
@@ -92,6 +125,31 @@ class OrdersController extends Controller
     }
 
     /**
+     * @throws ConnectionException
+     */
+    public function show(int $orderId): Response
+    {
+        $order = $this->plentySystem->getOrder($orderId);
+
+        $countries = $this->plentySystem->extractOrderCountries($order);
+        $skuCount = $this->countOrderSkus($order);
+        $hasTablet = $this->orderHasTablet($order);
+        $charges = KinaraCharge::calculateOrderTotal($hasTablet);
+
+        $orderWithExtras = array_merge($order, [
+            'countries' => $countries,
+            'sku_count' => $skuCount,
+            'has_tablet' => $hasTablet,
+            'charges' => $charges,
+        ]);
+
+        return Inertia::render('Orders/Show', [
+            'order' => $orderWithExtras,
+            'perOrderCharges' => KinaraCharge::getPerOrderCharges(),
+        ]);
+    }
+
+    /**
      * @return array<int, array{value: string, label: string}>
      */
     private function getAvailableMonths(): array
@@ -140,7 +198,7 @@ class OrdersController extends Controller
         $orderItems = $order['orderItems'] ?? [];
 
         foreach ($orderItems as $item) {
-            if (($item['itemVariationId'] ?? 0) === self::TABLET_VARIATION_ID) {
+            if (in_array($item['itemVariationId'] ?? 0, self::TABLET_VARIATION_IDS, true)) {
                 return true;
             }
         }

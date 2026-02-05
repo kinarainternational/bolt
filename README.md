@@ -46,15 +46,48 @@ The access token is cached for 23 hours (token valid for 24 hours).
 Orders are fetched for a specific date range with pagination:
 
 ```
-GET {base_url}/rest/orders?with[]=addresses&with[]=addressRelations&createdAtFrom={start}&createdAtTo={end}&page={page}&itemsPerPage=250
+GET {base_url}/rest/orders?with[]=addresses&with[]=addressRelations&with[]=orderItems&createdAtFrom={start}&createdAtTo={end}&page={page}&itemsPerPage=250
 ```
 
 **Query Parameters:**
-- `with[]` - Include related data: `addresses`, `addressRelations`
+- `with[]` - Include related data: `addresses`, `addressRelations`, `orderItems`
+- `orderTypes` - Comma-separated list of order type IDs to filter (e.g., `1` for Sales Orders only)
 - `createdAtFrom` - Start date (ISO 8601 format)
 - `createdAtTo` - End date (ISO 8601 format)
 - `page` - Page number for pagination
 - `itemsPerPage` - Items per page (max 250)
+
+### Order Type Filtering
+
+Only billable order types are fetched. Configure in `OrdersController.php`:
+
+```php
+private const array BILLABLE_ORDER_TYPES = [
+    1, // Sales Order
+    // Add more types as needed:
+    // 2, // Delivery
+    // 8, // Advance Order
+];
+```
+
+**Available Order Types:**
+| typeId | Type |
+|--------|------|
+| 1 | Sales Order |
+| 2 | Delivery |
+| 3 | Returns |
+| 4 | Credit Note |
+| 5 | Warranty |
+| 6 | Repair |
+| 7 | Offer |
+| 8 | Advance Order |
+| 9 | Multi-Order |
+| 10 | Multi Credit Note |
+| 11 | Multi Delivery |
+| 12 | Reorder |
+| 13 | Partial Delivery |
+| 14 | Subscription |
+| 15 | Redistribution |
 
 **Response Structure:**
 ```json
@@ -115,21 +148,49 @@ Each order contains items with variation information:
 }
 ```
 
-- `typeId: 1` = Product item (used for SKU counting)
-- `typeId: 6` = Shipping item (excluded from SKU count)
+**Order Item Types:**
+| typeId | Type | Included in SKU Count |
+|--------|------|----------------------|
+| 1 | Variation (Product) | Yes |
+| 2 | Bundle | No |
+| 3 | Bundle component | No |
+| 4 | Promotional coupon | No |
+| 5 | Gift card | No |
+| 6 | Shipping costs | No |
+| 7 | Payment surcharge | No |
+| 8 | Gift wrap | No |
+| 9 | Unassigned variation | No |
+| 10 | Deposit | No |
+| 11 | Order | No |
+| 12 | Dunning charge | No |
+| 13 | Set | No |
+| 14 | Set component | No |
+| 15 | Order property | No |
+
+Only `typeId = 1` (Variation) items are counted as SKUs.
 
 #### Tablet Detection
-Tablets are identified by their variation ID:
-- **Tablet Variation ID:** `1139`
+Tablets are identified by their variation IDs:
 
 ```php
 // In OrdersController.php
-private const TABLET_VARIATION_ID = 1139;
+private const array TABLET_VARIATION_IDS = [
+    1138, // BOLTABV2s - Tablet V2s
+    1139, // BOLTABV3 - Tablet V3
+    1130, // BOLTABV2+STI - Tablet V2 bundle
+    1131, // BOLTABV3+STI - Tablet V3 bundle
+    1132, // BOLTABV2+STI+TABTO
+    1133, // BOLTABV3+STI+TABTO
+    1134, // BOLTABV2+SIM
+    1135, // BOLTABV3+STI+SIM
+    1136, // BOLTABV2+STI+SIM+TABTO
+    1137, // BOLTABV3+STI+SIM+TABTO
+];
 
 private function orderHasTablet(array $order): bool
 {
     foreach ($order['orderItems'] as $item) {
-        if ($item['itemVariationId'] === self::TABLET_VARIATION_ID) {
+        if (in_array($item['itemVariationId'], self::TABLET_VARIATION_IDS, true)) {
             return true;
         }
     }

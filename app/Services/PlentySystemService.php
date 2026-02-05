@@ -73,7 +73,7 @@ class PlentySystemService
     public function getOrders(array $params = []): array
     {
         $defaultParams = [
-            'with' => ['addresses', 'addressRelations'],
+            'with' => ['addresses', 'addressRelations', 'orderItems'],
         ];
 
         $response = $this->client()
@@ -89,25 +89,33 @@ class PlentySystemService
     /**
      * Get all orders for a date range (handles pagination).
      *
+     * @param  array<int>  $orderTypes  Filter by order type IDs (1=Sales, 2=Delivery, 3=Returns, etc.)
      * @return array<int, array<string, mixed>>
      *
      * @throws ConnectionException
      * @throws Exception
      */
-    public function getOrdersForDateRange(\DateTimeInterface $startDate, \DateTimeInterface $endDate): array
-    {
+    public function getOrdersForDateRange(
+        \DateTimeInterface $startDate,
+        \DateTimeInterface $endDate,
+        array $orderTypes = []
+    ): array {
         $allOrders = [];
         $page = 1;
         $itemsPerPage = 250;
 
         do {
             $params = [
-                'with' => ['addresses', 'addressRelations'],
+                'with' => ['addresses', 'addressRelations', 'orderItems'],
                 'createdAtFrom' => $startDate->format('Y-m-d\TH:i:sP'),
                 'createdAtTo' => $endDate->format('Y-m-d\TH:i:sP'),
                 'page' => $page,
                 'itemsPerPage' => $itemsPerPage,
             ];
+
+            if (! empty($orderTypes)) {
+                $params['orderTypes'] = implode(',', $orderTypes);
+            }
 
             $response = $this->client()
                 ->get("{$this->baseUrl}/rest/orders", $params);
@@ -118,7 +126,6 @@ class PlentySystemService
 
             $data = $response->json();
             $entries = $data['entries'] ?? [];
-            dd($entries);
             $allOrders = array_merge($allOrders, $entries);
 
             $isLastPage = $data['isLastPage'] ?? true;
@@ -133,6 +140,7 @@ class PlentySystemService
      * Get a single order by ID.
      *
      * @return array<string, mixed>
+     *
      * @throws ConnectionException
      * @throws Exception
      */
@@ -140,7 +148,7 @@ class PlentySystemService
     {
         $response = $this->client()
             ->get("{$this->baseUrl}/rest/orders/{$orderId}", [
-                'with' => ['addresses', 'addressRelations'],
+                'with' => ['addresses', 'addressRelations', 'orderItems'],
             ]);
 
         if (! $response->successful()) {
@@ -197,7 +205,6 @@ class PlentySystemService
         $deliveryCountryId = null;
 
         $addresses = $order['addresses'] ?? [];
-        dd($addresses);
         $addressRelations = $order['addressRelations'] ?? [];
 
         foreach ($addressRelations as $relation) {
@@ -245,5 +252,42 @@ class PlentySystemService
     public function clearCountriesCache(): void
     {
         Cache::forget('plentysystem_countries');
+    }
+
+    /**
+     * Get all item variations with pagination.
+     *
+     * @return array<int, array<string, mixed>>
+     *
+     * @throws ConnectionException
+     * @throws Exception
+     */
+    public function getVariations(): array
+    {
+        $allVariations = [];
+        $page = 1;
+        $itemsPerPage = 250;
+
+        do {
+            $response = $this->client()
+                ->get("{$this->baseUrl}/rest/items/variations", [
+                    'page' => $page,
+                    'itemsPerPage' => $itemsPerPage,
+                ]);
+
+            if (! $response->successful()) {
+                throw new Exception('Failed to fetch variations: '.$response->body());
+            }
+
+            $data = $response->json();
+            $entries = $data['entries'] ?? [];
+            $allVariations = array_merge($allVariations, $entries);
+
+            $isLastPage = $data['isLastPage'] ?? true;
+            $page++;
+
+        } while (! $isLastPage);
+
+        return $allVariations;
     }
 }

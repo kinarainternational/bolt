@@ -17,25 +17,18 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 class ExportController extends Controller
 {
     /**
-     * Variation IDs that contain tablets.
-     *
-     * @var array<int>
+     * Tablet variation ID (Bolt Tablet V3).
      */
-    private const array TABLET_VARIATION_IDS = [
-        1125, // KIBOTBLT - Bolt Tablet
-        1138, // BOLTABV2s - Tablet V2s
-        1139, // BOLTABV3 - Tablet V3
-        1130, // BOLTABV2+STI
-        1131, // BOLTABV3+STI
-        1132, // BOLTABV2+STI+TABTO
-        1133, // BOLTABV3+STI+TABTO
-        1134, // BOLTABV2+SIM
-        1135, // BOLTABV3+STI+SIM
-        1136, // BOLTABV2+STI+SIM+TABTO
-        1137, // BOLTABV3+STI+SIM+TABTO
-    ];
+    private const int TABLET_VARIATION_ID = 1139;
 
     private const array BILLABLE_ORDER_TYPES = [1];
+
+    /**
+     * Status range for billable orders (shipped/delivered = 7.x).
+     */
+    private const float STATUS_MIN = 7.0;
+
+    private const float STATUS_MAX = 8.0;
 
     public function __construct(private readonly PlentySystemService $plentySystem) {}
 
@@ -46,9 +39,10 @@ class ExportController extends Controller
             'month' => 'required|integer|min:1|max:12',
             'warehouse_workers_hours' => 'required|numeric|min:0',
             'warehouse_workers_rate' => 'required|numeric|min:0',
-            'inbound' => 'required|numeric|min:0',
-            'pallet_storage' => 'required|numeric|min:0',
-            'returns' => 'required|numeric|min:0',
+            'inbound_pallets' => 'required|numeric|min:0',
+            'pallet_storage_count' => 'required|numeric|min:0',
+            'returns_count' => 'required|numeric|min:0',
+            'reset_tablet_count' => 'required|numeric|min:0',
         ]);
 
         $year = (int) $validated['year'];
@@ -76,7 +70,10 @@ class ExportController extends Controller
                 ->with('error', $e->getUserMessage());
         }
 
-        $groupedByCountry = $this->groupOrdersByCountry($allOrders);
+        // Filter to only shipped/delivered orders (status 7.x)
+        $billableOrders = $this->filterByStatus($allOrders);
+
+        $groupedByCountry = $this->groupOrdersByCountry($billableOrders);
 
         $spreadsheet = $this->createSpreadsheet(
             $groupedByCountry,
@@ -107,33 +104,27 @@ class ExportController extends Controller
         foreach ($orders as $order) {
             $countries = $this->plentySystem->extractOrderCountries($order);
             $countryName = $countries['delivery_country_name'] ?? 'Unknown';
+            $countryId = $countries['delivery_country_id'];
 
             if (! isset($grouped[$countryName])) {
                 $grouped[$countryName] = [
                     'country_name' => $countryName,
+                    'country_id' => $countryId,
                     'orders' => [],
                     'total' => 0,
                 ];
             }
 
-            $skuCount = $this->countOrderSkus($order);
-            $hasTablet = $this->orderHasTablet($order);
-
-            $pickingCharge = KinaraCharge::where('slug', 'picking_charge')->first()?->amount ?? 1.53;
-            $shippingCharge = KinaraCharge::where('slug', 'shipping_charge')->first()?->amount ?? 1.62;
-            $tabletConfig = $hasTablet ? (KinaraCharge::where('slug', 'tablet_configuration')->first()?->amount ?? 3.50) : 0;
-            $packaging = KinaraCharge::where('slug', 'packaging_material')->first()?->amount ?? 0.45;
-
-            $orderTotal = $pickingCharge + $shippingCharge + $tabletConfig + $packaging;
+            $totalQuantity = $this->countOrderQuantity($order);
+            $tabletCount = $this->countTablets($order);
+            $chargesItemized = KinaraCharge::getOrderChargesItemized($totalQuantity, $tabletCount, $countryId);
+            $orderTotal = KinaraCharge::calculateOrderTotalWithShipping($totalQuantity, $tabletCount, $countryId);
 
             $grouped[$countryName]['orders'][] = [
                 'id' => $order['id'],
-                'sku_count' => $skuCount,
-                'has_tablet' => $hasTablet,
-                'picking_charge' => $pickingCharge,
-                'shipping_charge' => $shippingCharge,
-                'tablet_config' => $tabletConfig,
-                'packaging' => $packaging,
+                'total_quantity' => $totalQuantity,
+                'tablet_count' => $tabletCount,
+                'charges_itemized' => $chargesItemized,
                 'total' => $orderTotal,
             ];
 
@@ -167,6 +158,10 @@ class ExportController extends Controller
         $sheet->getStyle('A'.$row)->getFont()->setBold(true)->setSize(14);
         $row += 2;
 
+        // Get charge names for headers
+        $perOrderCharges = KinaraCharge::getPerOrderCharges();
+        $chargeNames = $perOrderCharges->pluck('name')->toArray();
+
         $countryTotals = [];
 
         // Orders by country
@@ -180,7 +175,7 @@ class ExportController extends Controller
             $row++;
 
             // Table headers
-            $headers = ['Order No', '# of SKUs', 'Picking charge', 'Shipping charge', 'Tablet configuration', 'Packaging material', 'Total'];
+            $headers = ['Order No', 'Qty', 'Tablets', ...$chargeNames, 'Shipping', 'Total'];
             $col = 'A';
             foreach ($headers as $header) {
                 $sheet->setCellValue($col.$row, $header);
@@ -196,24 +191,37 @@ class ExportController extends Controller
 
             // Order rows
             foreach ($countryData['orders'] as $order) {
-                $sheet->setCellValue('A'.$row, $order['id']);
-                $sheet->setCellValue('B'.$row, $order['sku_count']);
-                $sheet->setCellValue('C'.$row, $order['picking_charge']);
-                $sheet->setCellValue('D'.$row, $order['shipping_charge']);
-                $sheet->setCellValue('E'.$row, $order['tablet_config'] > 0 ? $order['tablet_config'] : '-');
-                $sheet->setCellValue('F'.$row, $order['packaging']);
-                $sheet->setCellValue('G'.$row, "=SUM(C{$row}:F{$row})");
+                $col = 'A';
+                $sheet->setCellValue($col++.$row, $order['id']);
+                $sheet->setCellValue($col++.$row, $order['total_quantity']);
+                $sheet->setCellValue($col++.$row, $order['tablet_count']);
+
+                foreach ($perOrderCharges as $charge) {
+                    $chargeItem = collect($order['charges_itemized'])
+                        ->firstWhere('slug', $charge->slug);
+                    $value = $chargeItem ? $chargeItem['total'] : 0;
+                    $sheet->setCellValue($col++.$row, $value > 0 ? $value : '-');
+                }
+
+                // Shipping column
+                $shippingItem = collect($order['charges_itemized'])
+                    ->firstWhere('slug', 'shipping');
+                $shippingValue = $shippingItem ? $shippingItem['total'] : 0;
+                $sheet->setCellValue($col++.$row, $shippingValue > 0 ? $shippingValue : '-');
+
+                $sheet->setCellValue($col.$row, $order['total']);
                 $row++;
             }
 
             $orderEndRow = $row - 1;
+            $totalCol = chr(ord('A') + count($headers) - 1);
 
             // Country subtotal
             $sheet->setCellValue('A'.$row, 'Subtotal');
-            $sheet->setCellValue('G'.$row, "=SUM(G{$orderStartRow}:G{$orderEndRow})");
-            $sheet->getStyle('A'.$row.':G'.$row)->getFont()->setBold(true);
+            $sheet->setCellValue($totalCol.$row, "=SUM({$totalCol}{$orderStartRow}:{$totalCol}{$orderEndRow})");
+            $sheet->getStyle('A'.$row.':'.$totalCol.$row)->getFont()->setBold(true);
 
-            $countryTotals[$countryName] = 'G'.$row;
+            $countryTotals[$countryName] = $totalCol.$row;
             $row += 2;
         }
 
@@ -233,8 +241,8 @@ class ExportController extends Controller
         $row += 2;
 
         // Variable charges section
-        $sheet->setCellValue('A'.$row, 'Variable charges');
-        $sheet->setCellValue('B'.$row, '# of hours');
+        $sheet->setCellValue('A'.$row, 'Variable Charges');
+        $sheet->setCellValue('B'.$row, 'Input');
         $sheet->setCellValue('C'.$row, 'Total');
         $sheet->getStyle('A'.$row.':C'.$row)->getFont()->setBold(true);
         $sheet->getStyle('A'.$row.':C'.$row)->getFill()
@@ -242,110 +250,159 @@ class ExportController extends Controller
             ->getStartColor()->setRGB('E0E0E0');
         $row++;
 
-        $warehouseRow = $row;
+        $variableChargeRows = [];
+
+        // Warehouse workers
+        $variableChargeRows['warehouse'] = $row;
         $sheet->setCellValue('A'.$row, 'Warehouse workers');
-        $sheet->setCellValue('B'.$row, $variableCharges['warehouse_workers_hours']);
-        $sheet->setCellValue('C'.$row, "=B{$row}*{$variableCharges['warehouse_workers_rate']}");
+        $sheet->setCellValue('B'.$row, $variableCharges['warehouse_workers_hours'].' hrs @ €'.$variableCharges['warehouse_workers_rate']);
+        $sheet->setCellValue('C'.$row, $variableCharges['warehouse_workers_hours'] * $variableCharges['warehouse_workers_rate']);
         $row++;
 
-        $inboundRow = $row;
-        $sheet->setCellValue('A'.$row, 'Inbound');
-        $sheet->setCellValue('C'.$row, $variableCharges['inbound']);
+        // Inbound Pallet (€6/pallet)
+        $inboundPallets = (float) $variableCharges['inbound_pallets'];
+        $variableChargeRows['inbound'] = $row;
+        $sheet->setCellValue('A'.$row, 'Inbound Pallet');
+        $sheet->setCellValue('B'.$row, $inboundPallets.' pallets @ €6');
+        $sheet->setCellValue('C'.$row, $inboundPallets * 6);
         $row++;
 
-        $palletRow = $row;
-        $sheet->setCellValue('A'.$row, 'Pallet storage');
-        $sheet->setCellValue('C'.$row, $variableCharges['pallet_storage']);
+        // Pallet storage (€12/pallet/month)
+        $palletStorageCount = (float) $variableCharges['pallet_storage_count'];
+        $variableChargeRows['pallet'] = $row;
+        $sheet->setCellValue('A'.$row, 'Pallet storage / month');
+        $sheet->setCellValue('B'.$row, $palletStorageCount.' pallets @ €12');
+        $sheet->setCellValue('C'.$row, $palletStorageCount * 12);
         $row++;
 
-        $returnsRow = $row;
+        // Returns (€3/return)
+        $returnsCount = (float) $variableCharges['returns_count'];
+        $variableChargeRows['returns'] = $row;
         $sheet->setCellValue('A'.$row, 'Returns');
-        $sheet->setCellValue('C'.$row, $variableCharges['returns']);
+        $sheet->setCellValue('B'.$row, $returnsCount.' returns @ €3');
+        $sheet->setCellValue('C'.$row, $returnsCount * 3);
+        $row++;
+
+        // Reset tablet (€5.55/reset)
+        $resetTabletCount = (float) $variableCharges['reset_tablet_count'];
+        if ($resetTabletCount > 0) {
+            $variableChargeRows['reset'] = $row;
+            $sheet->setCellValue('A'.$row, 'Reset tablet');
+            $sheet->setCellValue('B'.$row, $resetTabletCount.' resets @ €5.55');
+            $sheet->setCellValue('C'.$row, $resetTabletCount * 5.55);
+            $row++;
+        }
+
+        $row++;
+
+        // Subtotal (before Kinara fee - excludes fixed charges)
+        $subtotalRow = $row;
+        $variableChargesList = 'C'.implode('+C', $variableChargeRows);
+        $sheet->setCellValue('A'.$row, 'Subtotal (before Kinara fee)');
+        $sheet->setCellValue('B'.$row, "=SUM(B{$countryTotalsStartRow}:B{$countryTotalsEndRow})+{$variableChargesList}");
+        $sheet->getStyle('A'.$row.':B'.$row)->getFont()->setBold(true);
         $row += 2;
 
-        // Fixed charges section
-        $sheet->setCellValue('A'.$row, 'Fixed charges');
+        // Kinara percentage (8% of subtotal, excluding fixed charges)
+        $sheet->setCellValue('A'.$row, 'Kinara fee (8%)');
+        $sheet->setCellValue('B'.$row, "=B{$subtotalRow}*0.08");
+        $kinaraRow = $row;
+        $row += 2;
+
+        // Subtotal after Kinara
+        $sheet->setCellValue('A'.$row, 'Subtotal after Kinara fee');
+        $sheet->setCellValue('B'.$row, "=B{$subtotalRow}+B{$kinaraRow}");
+        $sheet->getStyle('A'.$row.':B'.$row)->getFont()->setBold(true);
+        $subtotalAfterKinaraRow = $row;
+        $row += 2;
+
+        // Fixed charges section (excluded from Kinara %)
+        $sheet->setCellValue('A'.$row, 'Fixed Charges (excluded from Kinara %)');
         $sheet->getStyle('A'.$row)->getFont()->setBold(true);
         $sheet->getStyle('A'.$row.':B'.$row)->getFill()
             ->setFillType(Fill::FILL_SOLID)
             ->getStartColor()->setRGB('E0E0E0');
         $row++;
 
-        $portalRow = $row;
-        $sheet->setCellValue('A'.$row, 'Portal');
-        $sheet->setCellValue('B'.$row, KinaraCharge::where('slug', 'portal')->first()?->amount ?? 500);
+        $fixedChargesStart = $row;
+        $monthlyCharges = KinaraCharge::getMonthlyCharges();
+        foreach ($monthlyCharges as $charge) {
+            $sheet->setCellValue('A'.$row, $charge->name);
+            $sheet->setCellValue('B'.$row, $charge->amount);
+            $row++;
+        }
+        $fixedChargesEnd = $row - 1;
         $row++;
 
-        $accountFeeRow = $row;
-        $sheet->setCellValue('A'.$row, 'Account management fee');
-        $sheet->setCellValue('B'.$row, KinaraCharge::where('slug', 'account_management_fee')->first()?->amount ?? 1500);
-        $row += 2;
-
-        // Subtotal
-        $subtotalRow = $row;
-        $sheet->setCellValue('A'.$row, 'Subtotal');
-        $sheet->setCellValue('B'.$row, "=SUM(B{$countryTotalsStartRow}:B{$countryTotalsEndRow})+C{$warehouseRow}+C{$inboundRow}+C{$palletRow}+C{$returnsRow}+B{$portalRow}+B{$accountFeeRow}");
-        $sheet->getStyle('A'.$row.':B'.$row)->getFont()->setBold(true);
-        $row += 2;
-
-        // Kinara percentage
-        $sheet->setCellValue('A'.$row, 'Kinara percentage (8%)');
-        $sheet->setCellValue('B'.$row, "=B{$subtotalRow}*0.08");
-        $percentageRow = $row;
-        $row += 2;
-
         // Grand Total
-        $sheet->setCellValue('A'.$row, 'TOTAL');
-        $sheet->setCellValue('B'.$row, "=B{$subtotalRow}+B{$percentageRow}");
+        $sheet->setCellValue('A'.$row, 'GRAND TOTAL');
+        $sheet->setCellValue('B'.$row, "=B{$subtotalAfterKinaraRow}+SUM(B{$fixedChargesStart}:B{$fixedChargesEnd})");
         $sheet->getStyle('A'.$row.':B'.$row)->getFont()->setBold(true)->setSize(14);
         $sheet->getStyle('A'.$row.':B'.$row)->getFill()
             ->setFillType(Fill::FILL_SOLID)
             ->getStartColor()->setRGB('90EE90');
 
         // Auto-size columns
-        foreach (range('A', 'G') as $col) {
+        foreach (range('A', 'J') as $col) {
             $sheet->getColumnDimension($col)->setAutoSize(true);
         }
 
         // Format currency columns
-        $sheet->getStyle('C:G')->getNumberFormat()->setFormatCode('#,##0.00');
-        $sheet->getStyle('B'.$subtotalRow)->getNumberFormat()->setFormatCode('#,##0.00');
-        $sheet->getStyle('B'.$percentageRow)->getNumberFormat()->setFormatCode('#,##0.00');
-        $sheet->getStyle('B'.$row)->getNumberFormat()->setFormatCode('#,##0.00');
+        $sheet->getStyle('B:C')->getNumberFormat()->setFormatCode('#,##0.00');
 
         return $spreadsheet;
     }
 
     /**
-     * @param  array<string, mixed>  $order
+     * Filter orders to only include shipped/delivered orders (status 7.x).
+     *
+     * @param  array<int, array<string, mixed>>  $orders
+     * @return array<int, array<string, mixed>>
      */
-    private function countOrderSkus(array $order): int
+    private function filterByStatus(array $orders): array
     {
-        $orderItems = $order['orderItems'] ?? [];
-        $skuCount = 0;
+        return array_filter($orders, function (array $order): bool {
+            $statusId = (float) ($order['statusId'] ?? 0);
 
-        foreach ($orderItems as $item) {
-            if (($item['typeId'] ?? 0) === 1 && ($item['itemVariationId'] ?? 0) > 0) {
-                $skuCount++;
-            }
-        }
-
-        return $skuCount;
+            return $statusId >= self::STATUS_MIN && $statusId < self::STATUS_MAX;
+        });
     }
 
     /**
+     * Count total quantity of items in an order.
+     *
      * @param  array<string, mixed>  $order
      */
-    private function orderHasTablet(array $order): bool
+    private function countOrderQuantity(array $order): int
     {
         $orderItems = $order['orderItems'] ?? [];
+        $totalQuantity = 0;
 
         foreach ($orderItems as $item) {
-            if (in_array($item['itemVariationId'] ?? 0, self::TABLET_VARIATION_IDS, true)) {
-                return true;
+            if (($item['typeId'] ?? 0) === 1 && ($item['itemVariationId'] ?? 0) > 0) {
+                $totalQuantity += (int) ($item['quantity'] ?? 1);
             }
         }
 
-        return false;
+        return $totalQuantity;
+    }
+
+    /**
+     * Count tablets in an order.
+     *
+     * @param  array<string, mixed>  $order
+     */
+    private function countTablets(array $order): int
+    {
+        $orderItems = $order['orderItems'] ?? [];
+        $tabletCount = 0;
+
+        foreach ($orderItems as $item) {
+            if (($item['itemVariationId'] ?? 0) === self::TABLET_VARIATION_ID) {
+                $tabletCount += (int) ($item['quantity'] ?? 1);
+            }
+        }
+
+        return $tabletCount;
     }
 }

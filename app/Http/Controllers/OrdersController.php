@@ -14,27 +14,14 @@ use Inertia\Response;
 class OrdersController extends Controller
 {
     /**
-     * Variation IDs that contain tablets (trigger tablet configuration charge).
-     *
-     * @var array<int>
+     * Tablet variation ID.
+     * Only Bolt Tablet V3 (variation 1139) is considered a tablet.
      */
-    private const array TABLET_VARIATION_IDS = [
-        1125, // KIBOTBLT - Bolt Tablet
-        1138, // BOLTABV2s - Tablet V2s
-        1139, // BOLTABV3 - Tablet V3
-        1130, // BOLTABV2+STI - Tablet V2 bundle
-        1131, // BOLTABV3+STI - Tablet V3 bundle
-        1132, // BOLTABV2+STI+TABTO
-        1133, // BOLTABV3+STI+TABTO
-        1134, // BOLTABV2+SIM
-        1135, // BOLTABV3+STI+SIM
-        1136, // BOLTABV2+STI+SIM+TABTO
-        1137, // BOLTABV3+STI+SIM+TABTO
-    ];
+    private const int TABLET_VARIATION_ID = 1139;
 
     /**
      * Order types to include in billing calculations.
-     * 1 = Sales Order, 2 = Delivery, 3 = Returns, etc.
+     * 1 = Sales Order
      *
      * @see https://developers.plentymarkets.com/en-gb/developers/main/rest-api-guides/order-data.html
      *
@@ -43,6 +30,19 @@ class OrdersController extends Controller
     private const array BILLABLE_ORDER_TYPES = [
         1, // Sales Order
     ];
+
+    /**
+     * Minimum status ID for billable orders (shipped/delivered).
+     * Status 7 = "Outgoing items booked" (shipped)
+     * Status 7.02 = "Delivered"
+     */
+    private const float STATUS_MIN = 7.0;
+
+    /**
+     * Maximum status ID for billable orders.
+     * Excludes 8+ (canceled) and 9+ (returns).
+     */
+    private const float STATUS_MAX = 8.0;
 
     public function __construct(private readonly PlentySystemService $plentySystem) {}
 
@@ -63,11 +63,14 @@ class OrdersController extends Controller
                 self::BILLABLE_ORDER_TYPES
             );
 
-            $groupedByCountry = $this->processOrders($allOrders);
+            // Filter to only shipped/delivered orders (status 7.x)
+            $billableOrders = $this->filterByStatus($allOrders);
+
+            $groupedByCountry = $this->processOrders($billableOrders);
 
             return Inertia::render('Orders/Index', [
                 'groupedOrders' => array_values($groupedByCountry),
-                'totalOrders' => count($allOrders),
+                'totalOrders' => count($billableOrders),
                 'filters' => [
                     'year' => $year,
                     'month' => $month,
@@ -112,15 +115,18 @@ class OrdersController extends Controller
             $order = $this->plentySystem->getOrder($orderId);
 
             $countries = $this->plentySystem->extractOrderCountries($order);
-            $skuCount = $this->countOrderSkus($order);
-            $hasTablet = $this->orderHasTablet($order);
-            $charges = KinaraCharge::calculateOrderTotal($hasTablet);
+            $totalQuantity = $this->countOrderQuantity($order);
+            $tabletCount = $this->countTablets($order);
+            $deliveryCountryId = $countries['delivery_country_id'];
+            $charges = KinaraCharge::calculateOrderTotalWithShipping($totalQuantity, $tabletCount, $deliveryCountryId);
+            $chargesItemized = KinaraCharge::getOrderChargesItemized($totalQuantity, $tabletCount, $deliveryCountryId);
 
             $orderWithExtras = array_merge($order, [
                 'countries' => $countries,
-                'sku_count' => $skuCount,
-                'has_tablet' => $hasTablet,
+                'total_quantity' => $totalQuantity,
+                'tablet_count' => $tabletCount,
                 'charges' => $charges,
+                'charges_itemized' => $chargesItemized,
             ]);
 
             return Inertia::render('Orders/Show', [
@@ -169,26 +175,28 @@ class OrdersController extends Controller
                     'orders' => [],
                     'order_count' => 0,
                     'total_gross' => 0,
-                    'total_skus' => 0,
+                    'total_quantity' => 0,
+                    'total_tablets' => 0,
                     'total_charges' => 0,
                     'currency' => 'EUR',
                 ];
             }
 
-            $skuCount = $this->countOrderSkus($order);
-            $hasTablet = $this->orderHasTablet($order);
-            $charges = KinaraCharge::calculateOrderTotal($hasTablet);
+            $totalQuantity = $this->countOrderQuantity($order);
+            $tabletCount = $this->countTablets($order);
+            $charges = KinaraCharge::calculateOrderTotalWithShipping($totalQuantity, $tabletCount, $countryId);
 
             $orderWithExtras = array_merge($order, [
                 'countries' => $countries,
-                'sku_count' => $skuCount,
-                'has_tablet' => $hasTablet,
+                'total_quantity' => $totalQuantity,
+                'tablet_count' => $tabletCount,
                 'charges' => $charges,
             ]);
 
             $groupedByCountry[$countryName]['orders'][] = $orderWithExtras;
             $groupedByCountry[$countryName]['order_count']++;
-            $groupedByCountry[$countryName]['total_skus'] += $skuCount;
+            $groupedByCountry[$countryName]['total_quantity'] += $totalQuantity;
+            $groupedByCountry[$countryName]['total_tablets'] += $tabletCount;
             $groupedByCountry[$countryName]['total_charges'] += $charges;
 
             $grossTotal = $order['amounts'][0]['grossTotal'] ?? 0;
@@ -224,40 +232,56 @@ class OrdersController extends Controller
     }
 
     /**
-     * Count unique SKUs in an order (excluding shipping and other non-product items).
+     * Filter orders to only include shipped/delivered orders (status 7.x).
+     *
+     * @param  array<int, array<string, mixed>>  $orders
+     * @return array<int, array<string, mixed>>
+     */
+    private function filterByStatus(array $orders): array
+    {
+        return array_filter($orders, function (array $order): bool {
+            $statusId = (float) ($order['statusId'] ?? 0);
+
+            return $statusId >= self::STATUS_MIN && $statusId < self::STATUS_MAX;
+        });
+    }
+
+    /**
+     * Count the total quantity of items in an order (excluding shipping and other non-product items).
      *
      * @param  array<string, mixed>  $order
      */
-    private function countOrderSkus(array $order): int
+    private function countOrderQuantity(array $order): int
     {
         $orderItems = $order['orderItems'] ?? [];
-        $skuCount = 0;
+        $totalQuantity = 0;
 
         foreach ($orderItems as $item) {
             // typeId 1 = product item, skip shipping (6), discounts, etc.
             if (($item['typeId'] ?? 0) === 1 && ($item['itemVariationId'] ?? 0) > 0) {
-                $skuCount++;
+                $totalQuantity += (int) ($item['quantity'] ?? 1);
             }
         }
 
-        return $skuCount;
+        return $totalQuantity;
     }
 
     /**
-     * Check if an order contains a tablet (by variation ID).
+     * Count the number of tablets in an order.
      *
      * @param  array<string, mixed>  $order
      */
-    private function orderHasTablet(array $order): bool
+    private function countTablets(array $order): int
     {
         $orderItems = $order['orderItems'] ?? [];
+        $tabletCount = 0;
 
         foreach ($orderItems as $item) {
-            if (in_array($item['itemVariationId'] ?? 0, self::TABLET_VARIATION_IDS, true)) {
-                return true;
+            if (($item['itemVariationId'] ?? 0) === self::TABLET_VARIATION_ID) {
+                $tabletCount += (int) ($item['quantity'] ?? 1);
             }
         }
 
-        return false;
+        return $tabletCount;
     }
 }

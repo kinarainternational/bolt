@@ -48,16 +48,13 @@ interface OrderAmount {
     vatTotal: number;
 }
 
-interface Address {
-    id: number;
-    name1: string;
-    name2: string;
-    name3: string;
-    address1: string;
-    address2: string;
-    postalCode: string;
-    town: string;
-    countryId: number;
+interface ChargeItemized {
+    name: string;
+    slug: string;
+    unit_amount: number;
+    quantity: number;
+    total: number;
+    calculation_basis: string;
 }
 
 interface Order {
@@ -69,12 +66,12 @@ interface Order {
     updatedAt: string;
     plentyId: number;
     countries: OrderCountries;
-    sku_count: number;
-    has_tablet: boolean;
+    total_quantity: number;
+    tablet_count: number;
     charges: number;
+    charges_itemized?: ChargeItemized[];
     orderItems?: OrderItem[];
     amounts?: OrderAmount[];
-    addresses?: Address[];
 }
 
 interface KinaraCharge {
@@ -82,7 +79,7 @@ interface KinaraCharge {
     name: string;
     slug: string;
     amount: string;
-    tablet_only: boolean;
+    calculation_basis: string;
     charge_type: string;
     is_active: boolean;
 }
@@ -288,9 +285,17 @@ const retryFetch = () => {
                     </Card>
                     <Card>
                         <CardHeader class="pb-2">
-                            <CardDescription>SKUs</CardDescription>
+                            <CardDescription>Items</CardDescription>
                             <CardTitle class="text-xl">
-                                {{ order.sku_count }}
+                                {{ order.total_quantity }}
+                                <span
+                                    v-if="order.tablet_count > 0"
+                                    class="text-sm font-normal text-muted-foreground"
+                                >
+                                    ({{ order.tablet_count }} tablet{{
+                                        order.tablet_count > 1 ? 's' : ''
+                                    }})
+                                </span>
                             </CardTitle>
                         </CardHeader>
                     </Card>
@@ -299,9 +304,6 @@ const retryFetch = () => {
                             <CardDescription>Kinara Charges</CardDescription>
                             <CardTitle class="text-xl">
                                 {{ formatCurrency(order.charges) }}
-                                <Badge v-if="order.has_tablet" class="ml-2">
-                                    Tablet
-                                </Badge>
                             </CardTitle>
                         </CardHeader>
                     </Card>
@@ -316,8 +318,8 @@ const retryFetch = () => {
                             <CardHeader>
                                 <CardTitle>Products</CardTitle>
                                 <CardDescription>
-                                    {{ productItems.length }} product(s) in this
-                                    order
+                                    {{ productItems.length }} product line(s),
+                                    {{ order.total_quantity }} total items
                                 </CardDescription>
                             </CardHeader>
                             <CardContent>
@@ -337,6 +339,15 @@ const retryFetch = () => {
                                         >
                                             <TableCell class="font-mono">
                                                 {{ item.itemVariationId }}
+                                                <Badge
+                                                    v-if="
+                                                        item.itemVariationId ===
+                                                        1139
+                                                    "
+                                                    class="ml-2"
+                                                >
+                                                    Tablet
+                                                </Badge>
                                             </TableCell>
                                             <TableCell>
                                                 {{ item.orderItemName }}
@@ -467,53 +478,39 @@ const retryFetch = () => {
                             </CardContent>
                         </Card>
 
-                        <!-- Kinara Charges -->
+                        <!-- Kinara Charges (Itemized) -->
                         <Card>
                             <CardHeader>
                                 <CardTitle>Kinara Charges</CardTitle>
                                 <CardDescription>
-                                    Charges applied to this order
+                                    {{ order.total_quantity }} items,
+                                    {{ order.tablet_count }} tablet(s)
                                 </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <div class="space-y-2">
                                     <div
-                                        v-for="charge in perOrderCharges"
-                                        :key="charge.id"
-                                        class="flex justify-between"
-                                        :class="{
-                                            'text-muted-foreground':
-                                                charge.tablet_only &&
-                                                !order.has_tablet,
-                                        }"
+                                        v-for="charge in order.charges_itemized"
+                                        :key="charge.slug"
+                                        class="flex justify-between text-sm"
                                     >
-                                        <span class="text-sm">
+                                        <span>
                                             {{ charge.name }}
-                                            <Badge
-                                                v-if="charge.tablet_only"
-                                                variant="secondary"
-                                                class="ml-1 text-xs"
+                                            <span
+                                                v-if="charge.quantity > 1"
+                                                class="text-muted-foreground"
                                             >
-                                                Tablet
-                                            </Badge>
+                                                ({{ charge.quantity }} ×
+                                                {{
+                                                    formatCurrency(
+                                                        charge.unit_amount,
+                                                    )
+                                                }})
+                                            </span>
                                         </span>
-                                        <span
-                                            v-if="
-                                                !charge.tablet_only ||
-                                                order.has_tablet
-                                            "
-                                        >
-                                            {{
-                                                formatCurrency(
-                                                    parseFloat(charge.amount),
-                                                )
-                                            }}
-                                        </span>
-                                        <span
-                                            v-else
-                                            class="text-muted-foreground"
-                                            >-</span
-                                        >
+                                        <span>{{
+                                            formatCurrency(charge.total)
+                                        }}</span>
                                     </div>
                                     <div
                                         class="flex justify-between border-t pt-2 font-bold"

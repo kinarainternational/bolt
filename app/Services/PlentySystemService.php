@@ -34,8 +34,6 @@ class PlentySystemService
 
     /**
      * Get the access token, caching it for 23 hours (token valid for 24 hours).
-     *
-     * @throws PlentySystemException
      */
     public function getAccessToken(): string
     {
@@ -68,8 +66,6 @@ class PlentySystemService
 
     /**
      * Create an authenticated HTTP client.
-     *
-     * @throws PlentySystemException
      */
     private function client(): PendingRequest
     {
@@ -162,7 +158,7 @@ class PlentySystemService
     }
 
     /**
-     * Handle connection exceptions and throw appropriate PlentySystemException.
+     * Handle connection exceptions and throw the appropriate PlentySystemException.
      *
      * @throws PlentySystemException
      */
@@ -281,11 +277,26 @@ class PlentySystemService
     }
 
     /**
+     * Get all order statuses.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getOrderStatuses(): array
+    {
+        return Cache::remember('plentysystem_order_statuses', 86400, function () {
+            $response = $this->executeWithRetry(
+                fn () => $this->client()->get("{$this->baseUrl}/rest/orders/statuses"),
+                'fetching order statuses'
+            );
+
+            return $response->json();
+        });
+    }
+
+    /**
      * Get all countries.
      *
      * @return array<int, array<string, mixed>>
-     *
-     * @throws PlentySystemException
      */
     public function getCountries(): array
     {

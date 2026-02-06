@@ -2,332 +2,172 @@
 
 Order management and billing reference system integrated with PlentyMarkets.
 
+## Quick Start
+
+```bash
+# Install dependencies
+composer install
+npm install
+
+# Run migrations and seed data
+php artisan migrate
+php artisan db:seed
+
+# Build frontend
+npm run build
+
+# Or run in development
+composer run dev
+```
+
+## Business Logic Summary
+
+### Order Filtering
+
+- **Order Types:** Sales Orders only (typeId = 1)
+- **Order Status:** Shipped/Delivered only (statusId 7.0 to 7.99)
+- **View all statuses:** `php artisan plenty:statuses`
+
+### Per-Order Charges (All Flat Per Order)
+
+| Charge | Amount | Basis |
+|--------|--------|-------|
+| Warehouse Processing Charge | €0.25 | Per order |
+| Picking Charge | €1.62 | Per order |
+| Second Pick | €0.30 | Per additional item (Qty - 1) |
+| Pack Shipment | €0.71 | Per order |
+| Packaging Material | €0.45 | Per order |
+| Technology Fee | €0.50 | Per order |
+| Tablet Configuration | €5.55 | Per tablet |
+
+### Shipping Rates (FedEx Economy)
+
+| Country | Rate |
+|---------|------|
+| Poland | €7.09 |
+| Czech Republic | €8.00 |
+| Romania | €11.71 |
+| Bulgaria | €12.19 |
+| Latvia | €12.66 |
+
+### Variable Charges (Manual Input)
+
+| Charge | Rate |
+|--------|------|
+| Warehouse workers | €58/hour |
+| Inbound Pallet | €6/pallet |
+| Pallet storage | €12/pallet/month |
+| Returns | €3/return |
+| Reset tablet | €5.55/reset |
+
+### Monthly Fixed Charges (Excluded from Kinara %)
+
+| Charge | Amount |
+|--------|--------|
+| Portal | €75.00 |
+| Account Management Fee | €1,200.00 |
+
+### Kinara Fee
+
+- **Rate:** 8% of subtotal
+- **Excludes:** Fixed charges (Portal + Account Management)
+
+### Example Calculation
+
+Order with 2 items (1 tablet, 1 sticker) shipping to Poland:
+
+| Charge | Amount |
+|--------|--------|
+| Warehouse Processing | €0.25 |
+| Picking Charge | €1.62 |
+| Second Pick (1 × €0.30) | €0.30 |
+| Pack Shipment | €0.71 |
+| Packaging Material | €0.45 |
+| Technology Fee | €0.50 |
+| Tablet Configuration | €5.55 |
+| Shipping (Poland) | €7.09 |
+| **Total** | **€16.47** |
+
 ## PlentyMarkets API Integration
 
 ### Authentication
-
-The system authenticates with PlentyMarkets REST API using OAuth 2.0:
 
 ```
 POST {base_url}/rest/login
 ```
 
-**Request Body:**
-```json
-{
-    "username": "your_username",
-    "password": "your_password"
-}
-```
+Access token cached for 23 hours (token valid for 24 hours).
 
-**Response:**
-```json
-{
-    "accessToken": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9...",
-    "tokenType": "Bearer",
-    "expiresIn": 86400,
-    "refreshToken": "..."
-}
-```
-
-The access token is cached for 23 hours (token valid for 24 hours).
-
-### API Endpoints Used
+### API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/rest/login` | POST | Authenticate and obtain access token |
+| `/rest/login` | POST | Authenticate |
 | `/rest/orders` | GET | Fetch orders with pagination |
-| `/rest/orders/{orderId}` | GET | Fetch a single order |
-| `/rest/orders/shipping/countries` | GET | Fetch all countries (cached 24 hours) |
-
-### Fetching Orders
-
-Orders are fetched for a specific date range with pagination:
-
-```
-GET {base_url}/rest/orders?with[]=addresses&with[]=addressRelations&with[]=orderItems&createdAtFrom={start}&createdAtTo={end}&page={page}&itemsPerPage=250
-```
-
-**Query Parameters:**
-- `with[]` - Include related data: `addresses`, `addressRelations`, `orderItems`
-- `orderTypes` - Comma-separated list of order type IDs to filter (e.g., `1` for Sales Orders only)
-- `createdAtFrom` - Start date (ISO 8601 format)
-- `createdAtTo` - End date (ISO 8601 format)
-- `page` - Page number for pagination
-- `itemsPerPage` - Items per page (max 250)
+| `/rest/orders/{orderId}` | GET | Fetch single order |
+| `/rest/orders/statuses` | GET | Fetch all order statuses |
+| `/rest/orders/shipping/countries` | GET | Fetch countries (cached 24h) |
 
 ### Order Type Filtering
 
-Only billable order types are fetched. Configure in `OrdersController.php`:
+Only Sales Orders (typeId = 1) are included in billing.
+
+### Status Filtering
+
+Only shipped/delivered orders are billable:
+
+| Status ID | Name | Included |
+|-----------|------|----------|
+| 7 | Outgoing items booked | Yes |
+| 7.01 | Shipment registered | Yes |
+| 7.02 | Shipped, tracking allocated | Yes |
+| < 7 | Pending/Processing | No |
+| 8.x | Cancelled | No |
+| 9.x | Returns | No |
+
+**Filter Logic:** `statusId >= 7.0 && statusId < 8.0`
+
+### Tablet Detection
+
+Only one tablet variation:
+- **Variation ID 1139:** Bolt Tablet V3
 
 ```php
-private const array BILLABLE_ORDER_TYPES = [
-    1, // Sales Order
-    // Add more types as needed:
-    // 2, // Delivery
-    // 8, // Advance Order
-];
+private const int TABLET_VARIATION_ID = 1139;
 ```
 
-**Available Order Types:**
-| typeId | Type |
-|--------|------|
-| 1 | Sales Order |
-| 2 | Delivery |
-| 3 | Returns |
-| 4 | Credit Note |
-| 5 | Warranty |
-| 6 | Repair |
-| 7 | Offer |
-| 8 | Advance Order |
-| 9 | Multi-Order |
-| 10 | Multi Credit Note |
-| 11 | Multi Delivery |
-| 12 | Reorder |
-| 13 | Partial Delivery |
-| 14 | Subscription |
-| 15 | Redistribution |
+### Item Counting
 
-**Response Structure:**
-```json
-{
-    "page": 1,
-    "totalsCount": 150,
-    "isLastPage": false,
-    "entries": [
-        {
-            "id": 12345,
-            "typeId": 1,
-            "statusId": 5,
-            "statusName": "Shipped",
-            "createdAt": "2024-01-15T10:30:00+00:00",
-            "plentyId": 71370,
-            "addresses": [...],
-            "addressRelations": [...],
-            "orderItems": [...],
-            "amounts": [...]
-        }
-    ]
-}
-```
+- Count **total quantity** of items, not unique products
+- Only `typeId = 1` (Variation) items are counted
+- Example: 3x Tablet + 2x Sticker = **5 items**
 
-### Order Structure
+## Database Schema
 
-#### Address Relations
-Address relations link addresses to their purpose:
-- `typeId: 1` = Billing address
-- `typeId: 2` = Delivery address
-
-```json
-{
-    "addressRelations": [
-        { "typeId": 1, "addressId": 100 },
-        { "typeId": 2, "addressId": 101 }
-    ],
-    "addresses": [
-        { "id": 100, "countryId": 1, "name1": "Company", ... },
-        { "id": 101, "countryId": 6, "name1": "Company", ... }
-    ]
-}
-```
-
-#### Order Items
-Each order contains items with variation information:
-
-```json
-{
-    "orderItems": [
-        {
-            "typeId": 1,
-            "itemVariationId": 1234,
-            "quantity": 2,
-            "orderItemName": "Product Name"
-        }
-    ]
-}
-```
-
-**Order Item Types:**
-| typeId | Type | Included in SKU Count |
-|--------|------|----------------------|
-| 1 | Variation (Product) | Yes |
-| 2 | Bundle | No |
-| 3 | Bundle component | No |
-| 4 | Promotional coupon | No |
-| 5 | Gift card | No |
-| 6 | Shipping costs | No |
-| 7 | Payment surcharge | No |
-| 8 | Gift wrap | No |
-| 9 | Unassigned variation | No |
-| 10 | Deposit | No |
-| 11 | Order | No |
-| 12 | Dunning charge | No |
-| 13 | Set | No |
-| 14 | Set component | No |
-| 15 | Order property | No |
-
-Only `typeId = 1` (Variation) items are counted as SKUs.
-
-#### Tablet Detection
-Tablets are identified by their variation IDs:
-
-```php
-// In OrdersController.php
-private const array TABLET_VARIATION_IDS = [
-    1138, // BOLTABV2s - Tablet V2s
-    1139, // BOLTABV3 - Tablet V3
-    1130, // BOLTABV2+STI - Tablet V2 bundle
-    1131, // BOLTABV3+STI - Tablet V3 bundle
-    1132, // BOLTABV2+STI+TABTO
-    1133, // BOLTABV3+STI+TABTO
-    1134, // BOLTABV2+SIM
-    1135, // BOLTABV3+STI+SIM
-    1136, // BOLTABV2+STI+SIM+TABTO
-    1137, // BOLTABV3+STI+SIM+TABTO
-];
-
-private function orderHasTablet(array $order): bool
-{
-    foreach ($order['orderItems'] as $item) {
-        if (in_array($item['itemVariationId'], self::TABLET_VARIATION_IDS, true)) {
-            return true;
-        }
-    }
-    return false;
-}
-```
-
-## Charge Calculations
-
-### Database Schema: `kinara_charges`
+### `kinara_charges` Table
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | bigint | Primary key |
 | `name` | string | Display name |
 | `slug` | string | Unique identifier |
-| `amount` | decimal(10,2) | Charge amount in EUR |
-| `tablet_only` | boolean | Only applies to tablet orders |
+| `amount` | decimal(10,2) | Amount in EUR |
 | `charge_type` | string | `per_order` or `monthly` |
+| `calculation_basis` | string | `flat`, `per_additional_item`, or `per_tablet` |
 | `is_active` | boolean | Whether charge is active |
 
-### Per-Order Charges
+### `shipping_rates` Table
 
-Applied to each order. Calculated in `KinaraCharge::calculateOrderTotal()`:
-
-| Charge | Amount (EUR) | Tablet Only |
-|--------|--------------|-------------|
-| Picking Charge | 1.53 | No |
-| Shipping Charge | 1.62 | No |
-| Tablet Configuration | 3.50 | Yes |
-| Packaging Material | 0.45 | No |
-
-**Calculation Logic:**
-```php
-public static function calculateOrderTotal(bool $hasTablet = false): float
-{
-    $query = self::query()
-        ->where('is_active', true)
-        ->where('charge_type', 'per_order');
-
-    if (!$hasTablet) {
-        $query->where('tablet_only', false);
-    }
-
-    return (float) $query->sum('amount');
-}
-```
-
-**Results:**
-- Order without tablet: **3.60 EUR** (1.53 + 1.62 + 0.45)
-- Order with tablet: **7.10 EUR** (1.53 + 1.62 + 3.50 + 0.45)
-
-### Monthly Fixed Charges
-
-Fixed fees applied once per month:
-
-| Charge | Amount (EUR) |
-|--------|--------------|
-| Portal | 500.00 |
-| Account Management Fee | 1,500.00 |
-| **Total** | **2,000.00** |
-
-**Calculation:**
-```php
-public static function calculateMonthlyTotal(): float
-{
-    return (float) self::query()
-        ->where('is_active', true)
-        ->where('charge_type', 'monthly')
-        ->sum('amount');
-}
-```
-
-### Grand Total Calculation
-
-```
-Grand Total = Sum of all order charges + Monthly fixed charges
-```
-
-In the Vue component:
-```typescript
-const totalOrderCharges = computed(() => {
-    return props.groupedOrders.reduce(
-        (sum, group) => sum + group.total_charges,
-        0,
-    );
-});
-
-const grandTotal = computed(() => {
-    return totalOrderCharges.value + props.monthlyTotal;
-});
-```
-
-## Data Flow
-
-```
-┌─────────────────────┐
-│  PlentyMarkets API  │
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│ PlentySystemService │
-│  - Authentication   │
-│  - Fetch orders     │
-│  - Extract countries│
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  OrdersController   │
-│  - Group by country │
-│  - Count SKUs       │
-│  - Detect tablets   │
-│  - Calculate charges│
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│   KinaraCharge      │
-│  (Database Model)   │
-│  - Per-order charges│
-│  - Monthly charges  │
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  Orders/Index.vue   │
-│  - Display grouped  │
-│  - Show charges     │
-│  - Month filter     │
-└─────────────────────┘
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | bigint | Primary key |
+| `country_name` | string | Country name |
+| `plenty_country_id` | int | PlentyMarkets country ID |
+| `amount` | decimal(8,2) | Shipping rate in EUR |
+| `carrier` | string | Carrier name (FedEx Economy) |
+| `is_active` | boolean | Whether rate is active |
 
 ## Environment Configuration
-
-Required environment variables in `.env`:
 
 ```env
 PLENTYSYSTEM_BASE_URL=https://p{YOUR_PID}.my.plentysystems.com
@@ -336,22 +176,15 @@ PLENTYSYSTEM_PASSWORD=your_password
 PLENTYSYSTEM_TIMEOUT=30
 ```
 
-## Running the Application
+## Artisan Commands
 
 ```bash
-# Install dependencies
-composer install
-npm install
+# List all PlentyMarkets order statuses
+php artisan plenty:statuses
 
-# Run migrations and seed charges
-php artisan migrate
+# Seed charges and shipping rates
 php artisan db:seed --class=KinaraChargeSeeder
-
-# Build frontend
-npm run build
-
-# Or run in development
-npm run dev
+php artisan db:seed --class=ShippingRateSeeder
 ```
 
 ## Testing
@@ -360,6 +193,18 @@ npm run dev
 # Run all tests
 php artisan test
 
-# Run orders tests only
+# Run specific test file
 php artisan test tests/Feature/OrdersTest.php
+
+# Run with filter
+php artisan test --filter=orders
 ```
+
+## Documentation
+
+- **BUSINESS_LOGIC.md** - Complete calculation documentation
+- **EXPORT_QUESTIONS.md** - Questions and answers from management
+
+## Contract Reference
+
+Based on: Services Agreement_Bolt Operations OÜ_Kinara International GmbH_28.10.2025.pdf

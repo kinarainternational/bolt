@@ -20,7 +20,7 @@ class OrdersTest extends TestCase
                     [
                         'id' => 1,
                         'typeId' => 1,
-                        'statusId' => 5,
+                        'statusId' => 7,
                         'statusName' => 'Shipped',
                         'createdAt' => '2024-01-15T10:30:00+00:00',
                         'updatedAt' => '2024-01-16T08:00:00+00:00',
@@ -39,7 +39,7 @@ class OrdersTest extends TestCase
                     [
                         'id' => 2,
                         'typeId' => 1,
-                        'statusId' => 5,
+                        'statusId' => 7,
                         'statusName' => 'Shipped',
                         'createdAt' => '2024-01-15T11:30:00+00:00',
                         'updatedAt' => '2024-01-16T09:00:00+00:00',
@@ -127,7 +127,7 @@ class OrdersTest extends TestCase
                     [
                         'id' => 1,
                         'typeId' => 1,
-                        'statusId' => 5,
+                        'statusId' => 7,
                         'createdAt' => '2024-01-15T10:30:00+00:00',
                         'updatedAt' => '2024-01-16T08:00:00+00:00',
                         'plentyId' => 12345,
@@ -138,7 +138,7 @@ class OrdersTest extends TestCase
                     [
                         'id' => 2,
                         'typeId' => 1,
-                        'statusId' => 5,
+                        'statusId' => 7,
                         'createdAt' => '2024-01-15T11:30:00+00:00',
                         'updatedAt' => '2024-01-16T09:00:00+00:00',
                         'plentyId' => 12345,

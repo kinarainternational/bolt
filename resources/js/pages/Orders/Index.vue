@@ -43,8 +43,8 @@ interface Order {
     updatedAt: string;
     plentyId: number;
     countries: OrderCountries;
-    sku_count: number;
-    has_tablet: boolean;
+    total_quantity: number;
+    tablet_count: number;
     charges: number;
     amounts?: Array<{
         currency: string;
@@ -59,7 +59,8 @@ interface GroupedOrders {
     orders: Order[];
     order_count: number;
     total_gross: number;
-    total_skus: number;
+    total_quantity: number;
+    total_tablets: number;
     total_charges: number;
     currency: string;
 }
@@ -79,7 +80,7 @@ interface KinaraCharge {
     name: string;
     slug: string;
     amount: string;
-    tablet_only: boolean;
+    calculation_basis: string;
     charge_type: string;
     is_active: boolean;
 }
@@ -151,6 +152,16 @@ const getOrderTypeName = (typeId: number): string => {
     };
 
     return types[typeId] ?? `Type ${typeId}`;
+};
+
+const getCalculationBasisLabel = (basis: string): string => {
+    const labels: Record<string, string> = {
+        flat: 'per order',
+        per_item: 'per item',
+        per_additional_item: 'per extra item',
+        per_tablet: 'per tablet',
+    };
+    return labels[basis] ?? basis;
 };
 
 const toggleCountry = (countryName: string) => {
@@ -270,10 +281,7 @@ const retryFetch = () => {
             </div>
 
             <!-- Flash Error Alert (from export failures, etc.) -->
-            <Card
-                v-if="flashError"
-                class="border-destructive bg-destructive/10"
-            >
+            <Card v-if="flashError" class="border-destructive bg-destructive/10">
                 <CardContent class="flex items-center justify-between py-4">
                     <div class="flex items-center gap-3">
                         <svg
@@ -294,21 +302,14 @@ const retryFetch = () => {
                             {{ flashError }}
                         </p>
                     </div>
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        @click="flashError = null"
-                    >
+                    <Button variant="ghost" size="sm" @click="flashError = null">
                         Dismiss
                     </Button>
                 </CardContent>
             </Card>
 
             <!-- API Error Alert -->
-            <Card
-                v-if="error"
-                class="border-destructive bg-destructive/10"
-            >
+            <Card v-if="error" class="border-destructive bg-destructive/10">
                 <CardContent class="flex items-center justify-between py-4">
                     <div class="flex items-center gap-3">
                         <svg
@@ -352,9 +353,7 @@ const retryFetch = () => {
                             stroke="currentColor"
                             stroke-width="2"
                         >
-                            <path
-                                d="M21 12a9 9 0 1 1-6.219-8.56"
-                            />
+                            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
                         </svg>
                         {{ isRetrying ? 'Retrying...' : 'Retry' }}
                     </Button>
@@ -402,12 +401,8 @@ const retryFetch = () => {
                 <!-- Per-Order Charges -->
                 <Card>
                     <CardHeader class="pb-2">
-                        <CardTitle class="text-base">
-                            Per-Order Charges
-                        </CardTitle>
-                        <CardDescription>
-                            Applied to each order
-                        </CardDescription>
+                        <CardTitle class="text-base">Per-Order Charges</CardTitle>
+                        <CardDescription>Applied to each order</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <div class="space-y-2">
@@ -419,17 +414,14 @@ const retryFetch = () => {
                                 <span class="text-sm">
                                     {{ charge.name }}
                                     <Badge
-                                        v-if="charge.tablet_only"
                                         variant="secondary"
                                         class="ml-2 text-xs"
                                     >
-                                        Tablet only
+                                        {{ getCalculationBasisLabel(charge.calculation_basis) }}
                                     </Badge>
                                 </span>
                                 <span class="font-medium">
-                                    {{
-                                        formatCurrency(parseFloat(charge.amount))
-                                    }}
+                                    {{ formatCurrency(parseFloat(charge.amount)) }}
                                 </span>
                             </div>
                         </div>
@@ -443,7 +435,8 @@ const retryFetch = () => {
                             Monthly Fixed Charges
                         </CardTitle>
                         <CardDescription>
-                            Fixed fees for {{ currentMonthLabel }}
+                            Fixed fees for {{ currentMonthLabel }} (excluded from
+                            8%)
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -455,9 +448,7 @@ const retryFetch = () => {
                             >
                                 <span class="text-sm">{{ charge.name }}</span>
                                 <span class="font-medium">
-                                    {{
-                                        formatCurrency(parseFloat(charge.amount))
-                                    }}
+                                    {{ formatCurrency(parseFloat(charge.amount)) }}
                                 </span>
                             </div>
                             <div
@@ -485,9 +476,7 @@ const retryFetch = () => {
                                 class="cursor-pointer hover:bg-muted/50 transition-colors"
                                 @click="toggleCountry(group.country_name)"
                             >
-                                <div
-                                    class="flex items-center justify-between"
-                                >
+                                <div class="flex items-center justify-between">
                                     <div class="flex items-center gap-3">
                                         <div>
                                             <CardTitle class="text-lg">
@@ -501,14 +490,15 @@ const retryFetch = () => {
                                                         : 'orders'
                                                 }}
                                                 &middot;
-                                                {{ group.total_skus }} SKUs
+                                                {{ group.total_quantity }} items
+                                                &middot;
+                                                {{ group.total_tablets }} tablets
                                                 &middot;
                                                 {{
                                                     formatCurrency(
                                                         group.total_charges,
                                                     )
                                                 }}
-                                                charges
                                             </CardDescription>
                                         </div>
                                     </div>
@@ -547,8 +537,8 @@ const retryFetch = () => {
                                             <TableHead>Order ID</TableHead>
                                             <TableHead>Type</TableHead>
                                             <TableHead>Status</TableHead>
-                                            <TableHead>SKUs</TableHead>
-                                            <TableHead>Tablet</TableHead>
+                                            <TableHead>Qty</TableHead>
+                                            <TableHead>Tablets</TableHead>
                                             <TableHead>Charges</TableHead>
                                             <TableHead>Created</TableHead>
                                         </TableRow>
@@ -582,14 +572,14 @@ const retryFetch = () => {
                                                 }}
                                             </TableCell>
                                             <TableCell>
-                                                {{ order.sku_count }}
+                                                {{ order.total_quantity }}
                                             </TableCell>
                                             <TableCell>
                                                 <Badge
-                                                    v-if="order.has_tablet"
+                                                    v-if="order.tablet_count > 0"
                                                     variant="default"
                                                 >
-                                                    Yes
+                                                    {{ order.tablet_count }}
                                                 </Badge>
                                                 <span
                                                     v-else
@@ -600,9 +590,7 @@ const retryFetch = () => {
                                             </TableCell>
                                             <TableCell>
                                                 {{
-                                                    formatCurrency(
-                                                        order.charges,
-                                                    )
+                                                    formatCurrency(order.charges)
                                                 }}
                                             </TableCell>
                                             <TableCell>

@@ -24,10 +24,11 @@ const emit = defineEmits<{
 }>();
 
 const warehouseWorkersHours = ref<number>(0);
-const warehouseWorkersRate = ref<number>(50);
-const inbound = ref<number>(0);
-const palletStorage = ref<number>(0);
-const returns = ref<number>(0);
+const warehouseWorkersRate = ref<number>(58);
+const inboundPallets = ref<number>(0);
+const palletStorageCount = ref<number>(0);
+const returnsCount = ref<number>(0);
+const resetTabletCount = ref<number>(0);
 
 const isExporting = ref(false);
 
@@ -40,7 +41,10 @@ const handleExport = async () => {
         form.action = '/orders/export';
         form.style.display = 'none';
 
-        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+        const csrfToken =
+            document
+                .querySelector('meta[name="csrf-token"]')
+                ?.getAttribute('content') || '';
 
         const fields = {
             _token: csrfToken,
@@ -48,9 +52,10 @@ const handleExport = async () => {
             month: props.month.toString(),
             warehouse_workers_hours: warehouseWorkersHours.value.toString(),
             warehouse_workers_rate: warehouseWorkersRate.value.toString(),
-            inbound: inbound.value.toString(),
-            pallet_storage: palletStorage.value.toString(),
-            returns: returns.value.toString(),
+            inbound_pallets: inboundPallets.value.toString(),
+            pallet_storage_count: palletStorageCount.value.toString(),
+            returns_count: returnsCount.value.toString(),
+            reset_tablet_count: resetTabletCount.value.toString(),
         };
 
         for (const [name, value] of Object.entries(fields)) {
@@ -74,15 +79,32 @@ const handleExport = async () => {
 const warehouseTotal = () => {
     return (warehouseWorkersHours.value * warehouseWorkersRate.value).toFixed(2);
 };
+
+const inboundTotal = () => {
+    return (inboundPallets.value * 6).toFixed(2);
+};
+
+const palletStorageTotal = () => {
+    return (palletStorageCount.value * 12).toFixed(2);
+};
+
+const returnsTotal = () => {
+    return (returnsCount.value * 3).toFixed(2);
+};
+
+const resetTabletTotal = () => {
+    return (resetTabletCount.value * 5.55).toFixed(2);
+};
 </script>
 
 <template>
     <Dialog :open="open" @update:open="emit('update:open', $event)">
-        <DialogContent class="sm:max-w-[500px]">
+        <DialogContent class="sm:max-w-[550px]">
             <DialogHeader>
                 <DialogTitle>Export Reference Sheet</DialogTitle>
                 <DialogDescription>
-                    Export orders for {{ monthLabel }} to Excel. Enter the variable charges below.
+                    Export orders for {{ monthLabel }} to Excel. Enter the
+                    variable charges below.
                 </DialogDescription>
             </DialogHeader>
 
@@ -110,52 +132,81 @@ const warehouseTotal = () => {
                             placeholder="Rate"
                             class="w-20"
                         />
-                        <span class="text-sm text-muted-foreground">= {{ warehouseTotal() }}</span>
+                        <span class="text-sm text-muted-foreground"
+                            >= €{{ warehouseTotal() }}</span
+                        >
                     </div>
                 </div>
 
-                <!-- Inbound -->
+                <!-- Inbound Pallet -->
                 <div class="grid grid-cols-4 items-center gap-4">
-                    <Label class="text-right">Inbound</Label>
-                    <div class="col-span-3">
+                    <Label class="text-right">Inbound Pallet</Label>
+                    <div class="col-span-3 flex gap-2 items-center">
                         <Input
-                            v-model.number="inbound"
+                            v-model.number="inboundPallets"
                             type="number"
                             min="0"
-                            step="0.01"
-                            placeholder="0.00"
-                            class="w-32"
+                            step="1"
+                            placeholder="Pallets"
+                            class="w-24"
                         />
+                        <span class="text-sm text-muted-foreground"
+                            >pallets @ €6 = €{{ inboundTotal() }}</span
+                        >
                     </div>
                 </div>
 
                 <!-- Pallet Storage -->
                 <div class="grid grid-cols-4 items-center gap-4">
                     <Label class="text-right">Pallet storage</Label>
-                    <div class="col-span-3">
+                    <div class="col-span-3 flex gap-2 items-center">
                         <Input
-                            v-model.number="palletStorage"
+                            v-model.number="palletStorageCount"
                             type="number"
                             min="0"
-                            step="0.01"
-                            placeholder="0.00"
-                            class="w-32"
+                            step="1"
+                            placeholder="Pallets"
+                            class="w-24"
                         />
+                        <span class="text-sm text-muted-foreground"
+                            >pallets @ €12 = €{{ palletStorageTotal() }}</span
+                        >
                     </div>
                 </div>
 
                 <!-- Returns -->
                 <div class="grid grid-cols-4 items-center gap-4">
                     <Label class="text-right">Returns</Label>
-                    <div class="col-span-3">
+                    <div class="col-span-3 flex gap-2 items-center">
                         <Input
-                            v-model.number="returns"
+                            v-model.number="returnsCount"
                             type="number"
                             min="0"
-                            step="0.01"
-                            placeholder="0.00"
-                            class="w-32"
+                            step="1"
+                            placeholder="Returns"
+                            class="w-24"
                         />
+                        <span class="text-sm text-muted-foreground"
+                            >returns @ €3 = €{{ returnsTotal() }}</span
+                        >
+                    </div>
+                </div>
+
+                <!-- Reset Tablet -->
+                <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">Reset tablet</Label>
+                    <div class="col-span-3 flex gap-2 items-center">
+                        <Input
+                            v-model.number="resetTabletCount"
+                            type="number"
+                            min="0"
+                            step="1"
+                            placeholder="Resets"
+                            class="w-24"
+                        />
+                        <span class="text-sm text-muted-foreground"
+                            >resets @ €5.55 = €{{ resetTabletTotal() }}</span
+                        >
                     </div>
                 </div>
             </div>

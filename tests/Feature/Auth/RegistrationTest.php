@@ -9,23 +9,25 @@ class RegistrationTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_registration_screen_can_be_rendered()
+    public function test_registration_is_disabled()
     {
-        $response = $this->get(route('register'));
+        // Registration is disabled - only admins can add users
+        $response = $this->get('/register');
 
-        $response->assertOk();
+        $response->assertNotFound();
     }
 
-    public function test_new_users_can_register()
+    public function test_users_cannot_register_directly()
     {
-        $response = $this->post(route('register.store'), [
+        // Registration is disabled - only admins can add users
+        $response = $this->post('/register', [
             'name' => 'Test User',
             'email' => 'test@example.com',
             'password' => 'password',
             'password_confirmation' => 'password',
         ]);
 
-        $this->assertAuthenticated();
-        $response->assertRedirect(route('dashboard', absolute: false));
+        $response->assertNotFound();
+        $this->assertGuest();
     }
 }

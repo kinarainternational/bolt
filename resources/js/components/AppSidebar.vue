@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { Link } from '@inertiajs/vue3';
-import { LayoutGrid, ShoppingCart } from 'lucide-vue-next';
+import { Link, usePage } from '@inertiajs/vue3';
+import { LayoutGrid, ShoppingCart, Users } from 'lucide-vue-next';
+import { computed } from 'vue';
+import { index as ordersIndex } from '@/actions/App/Http/Controllers/OrdersController';
 import NavMain from '@/components/NavMain.vue';
 import NavUser from '@/components/NavUser.vue';
 import {
@@ -13,9 +15,12 @@ import {
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
 import { dashboard } from '@/routes';
-import { index as ordersIndex } from '@/actions/App/Http/Controllers/OrdersController';
+import { index as usersIndex } from '@/routes/admin/users';
 import { type NavItem } from '@/types';
 import AppLogo from './AppLogo.vue';
+
+const page = usePage();
+const isAdmin = computed(() => page.props.auth.user?.is_admin ?? false);
 
 const mainNavItems: NavItem[] = [
     {
@@ -27,6 +32,14 @@ const mainNavItems: NavItem[] = [
         title: 'Orders',
         href: ordersIndex(),
         icon: ShoppingCart,
+    },
+];
+
+const adminNavItems: NavItem[] = [
+    {
+        title: 'Users',
+        href: usersIndex(),
+        icon: Users,
     },
 ];
 </script>
@@ -47,6 +60,7 @@ const mainNavItems: NavItem[] = [
 
         <SidebarContent>
             <NavMain :items="mainNavItems" />
+            <NavMain v-if="isAdmin" :items="adminNavItems" label="Admin" />
         </SidebarContent>
 
         <SidebarFooter>

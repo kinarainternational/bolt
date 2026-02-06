@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use App\Services\PlentySystemService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
@@ -11,8 +12,16 @@ class OrdersTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_unauthenticated_user_cannot_access_orders(): void
+    {
+        $response = $this->get(route('orders.index'));
+
+        $response->assertRedirect(route('login'));
+    }
+
     public function test_orders_page_displays_grouped_orders_by_country(): void
     {
+        $user = User::factory()->create();
         $this->mock(PlentySystemService::class, function (MockInterface $mock) {
             $mock->shouldReceive('getOrdersForDateRange')
                 ->once()
@@ -67,7 +76,7 @@ class OrdersTest extends TestCase
                 ]);
         });
 
-        $response = $this->get(route('orders.index'));
+        $response = $this->actingAs($user)->get(route('orders.index'));
 
         $response->assertOk();
         $response->assertInertia(fn ($page) => $page
@@ -84,13 +93,14 @@ class OrdersTest extends TestCase
 
     public function test_orders_page_handles_empty_orders(): void
     {
+        $user = User::factory()->create();
         $this->mock(PlentySystemService::class, function (MockInterface $mock) {
             $mock->shouldReceive('getOrdersForDateRange')
                 ->once()
                 ->andReturn([]);
         });
 
-        $response = $this->get(route('orders.index'));
+        $response = $this->actingAs($user)->get(route('orders.index'));
 
         $response->assertOk();
         $response->assertInertia(fn ($page) => $page
@@ -102,13 +112,14 @@ class OrdersTest extends TestCase
 
     public function test_orders_page_accepts_month_filter(): void
     {
+        $user = User::factory()->create();
         $this->mock(PlentySystemService::class, function (MockInterface $mock) {
             $mock->shouldReceive('getOrdersForDateRange')
                 ->once()
                 ->andReturn([]);
         });
 
-        $response = $this->get(route('orders.index', ['year' => 2024, 'month' => 6]));
+        $response = $this->actingAs($user)->get(route('orders.index', ['year' => 2024, 'month' => 6]));
 
         $response->assertOk();
         $response->assertInertia(fn ($page) => $page
@@ -120,6 +131,7 @@ class OrdersTest extends TestCase
 
     public function test_orders_are_grouped_by_delivery_country(): void
     {
+        $user = User::factory()->create();
         $this->mock(PlentySystemService::class, function (MockInterface $mock) {
             $mock->shouldReceive('getOrdersForDateRange')
                 ->once()
@@ -167,7 +179,7 @@ class OrdersTest extends TestCase
                 ]);
         });
 
-        $response = $this->get(route('orders.index'));
+        $response = $this->actingAs($user)->get(route('orders.index'));
 
         $response->assertOk();
         $response->assertInertia(fn ($page) => $page

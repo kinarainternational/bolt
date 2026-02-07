@@ -55,30 +55,34 @@ defineProps<{
                 <div class="animate-bounce-slow absolute top-[40%] left-[25%] h-6 w-6 rounded-full bg-white/10" />
             </div>
 
-            <!-- Center logo/icon -->
-            <div class="relative z-10 m-auto">
-                <div class="animate-pulse-slow flex h-32 w-32 items-center justify-center rounded-full bg-white/10 backdrop-blur-sm">
-                    <svg class="h-16 w-16 text-white" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                </div>
-            </div>
         </div>
 
         <!-- Right panel with form -->
-        <div class="lg:p-8">
+        <div class="flex flex-col justify-between lg:p-8 py-8">
+            <div></div>
             <div
                 class="mx-auto flex w-full flex-col justify-center space-y-6 sm:w-[350px]"
             >
                 <div class="flex flex-col space-y-2 text-center">
-                    <h1 class="text-xl font-medium tracking-tight" v-if="title">
-                        {{ title }}
+                    <h1 class="text-2xl font-bold tracking-tight">
+                        Bolt Portal
                     </h1>
-                    <p class="text-sm text-muted-foreground" v-if="description">
-                        {{ description }}
+                    <p class="text-sm text-muted-foreground" v-if="title">
+                        {{ title }}
                     </p>
                 </div>
                 <slot />
+            </div>
+            <div class="text-center text-sm text-muted-foreground">
+                Powered by
+                <a
+                    href="https://kinarainternational.com/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="underline underline-offset-4 hover:text-foreground transition-colors"
+                >
+                    Kinara International
+                </a>
             </div>
         </div>
     </div>

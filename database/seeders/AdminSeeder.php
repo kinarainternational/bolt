@@ -13,13 +13,13 @@ class AdminSeeder extends Seeder
      */
     public function run(): void
     {
-        $email = config('app.admin_email', 'admin@kinara.com');
+        $email = config('app.admin_email', 'happy@kinaraexports.com');
         $password = config('app.admin_password', 'password');
 
         User::updateOrCreate(
             ['email' => $email],
             [
-                'name' => 'Admin',
+                'name' => 'Happy',
                 'password' => Hash::make($password),
                 'is_admin' => true,
                 'email_verified_at' => now(),
